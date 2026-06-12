@@ -27,7 +27,7 @@ class Encoder:
         self._a = Pin(pin_a, Pin.IN, Pin.PULL_UP)
         self._b = Pin(pin_b, Pin.IN, Pin.PULL_UP)
         self._last_a = self._a.value()
-        self._a.irq(trigger=Pin.IRQ_RISING | Pin.IRQ_FALLING, handler=self._isr)
+        self._a.irq(trigger=Pin.IRQ_RISING | Pin.IRQ_FALLING, handler=self._isr, hard=True)
 
     def _isr(self, _pin):
         a = self._a.value()
