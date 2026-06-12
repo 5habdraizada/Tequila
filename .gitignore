@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pth
+*.onnx
+
+# Model weights / large binaries
+checkpoints/
+depth_model/
+*.npz
+*.ply
+
+# Generated outputs
+inputs/
+outputs/
+*.png
+*.jpg
+*.jpeg
+*.mp4
+*.docx
+
+# JS tooling
+node_modules/
+package-lock.json
+
+# Editor / Claude
+.vscode/
+.claude/
+
+# HuggingFace cache
+.cache/

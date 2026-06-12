@@ -1,0 +1,9 @@
+torch>=2.0
+pyserial>=3.5
+torchvision
+opencv-python-headless
+numpy
+open3d
+viser
+transformers
+huggingface_hub

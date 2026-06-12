@@ -1,0 +1,704 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Phase 1 — Pico & Motors</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: "Georgia", serif;
+      font-size: 15px;
+      line-height: 1.7;
+      color: #1a1a1a;
+      background: #fff;
+      max-width: 860px;
+      margin: 60px auto;
+      padding: 0 40px 80px;
+    }
+
+    h1 {
+      font-size: 22px;
+      font-weight: bold;
+      border-bottom: 2px solid #1a1a1a;
+      padding-bottom: 8px;
+      margin-bottom: 4px;
+    }
+
+    .subtitle {
+      font-size: 13px;
+      color: #555;
+      margin-bottom: 40px;
+    }
+
+    h2 {
+      font-size: 16px;
+      font-weight: bold;
+      margin-top: 40px;
+      margin-bottom: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      border-bottom: 1px solid #ccc;
+      padding-bottom: 4px;
+    }
+
+    h3 {
+      font-size: 15px;
+      font-weight: bold;
+      margin-top: 24px;
+      margin-bottom: 8px;
+    }
+
+    p { margin-bottom: 10px; }
+
+    ul, ol {
+      margin: 8px 0 12px 24px;
+    }
+
+    li { margin-bottom: 4px; }
+
+    code {
+      font-family: "Courier New", monospace;
+      font-size: 13px;
+      background: #f4f4f4;
+      padding: 1px 5px;
+      border-radius: 2px;
+    }
+
+    pre {
+      font-family: "Courier New", monospace;
+      font-size: 13px;
+      background: #f4f4f4;
+      border-left: 3px solid #999;
+      padding: 14px 16px;
+      margin: 12px 0 16px;
+      overflow-x: auto;
+      line-height: 1.5;
+      white-space: pre;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 12px 0 16px;
+      font-size: 14px;
+    }
+
+    th {
+      text-align: left;
+      border-bottom: 2px solid #1a1a1a;
+      padding: 6px 10px;
+      font-weight: bold;
+    }
+
+    td {
+      border-bottom: 1px solid #ddd;
+      padding: 6px 10px;
+      vertical-align: top;
+    }
+
+    tr:last-child td { border-bottom: none; }
+
+    .note {
+      border-left: 3px solid #999;
+      padding: 8px 14px;
+      margin: 12px 0;
+      font-size: 14px;
+      color: #333;
+    }
+
+    .section-index {
+      margin: 24px 0 40px;
+      font-size: 14px;
+    }
+
+    .section-index a {
+      color: #1a1a1a;
+      text-decoration: none;
+      display: block;
+      padding: 2px 0;
+    }
+
+    .section-index a:hover { text-decoration: underline; }
+
+    .divider {
+      border: none;
+      border-top: 1px solid #ddd;
+      margin: 32px 0;
+    }
+
+    .label {
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: #888;
+      display: block;
+      margin-bottom: 4px;
+    }
+
+    .success {
+      border-left: 3px solid #1a1a1a;
+      padding: 8px 14px;
+      margin: 16px 0;
+      font-size: 14px;
+    }
+  </style>
+</head>
+<body>
+
+  <h1>Phase 1 — Pico &amp; Motors</h1>
+  <p class="subtitle">TEQUILA project &nbsp;|&nbsp; Hardware layer: encoders, motor control, USB serial</p>
+
+  <nav class="section-index">
+    <a href="#overview">1. Overview</a>
+    <a href="#hardware">2. Hardware setup</a>
+    <a href="#protocol">3. Communication protocol</a>
+    <a href="#encoder">4. Encoder</a>
+    <a href="#motor">5. Motor driver</a>
+    <a href="#drivetrain">6. Drive train</a>
+    <a href="#serial">7. Serial I/O</a>
+    <a href="#mainloop">8. Main loop</a>
+    <a href="#config">9. Configuration reference</a>
+    <a href="#testing">10. Testing checklist</a>
+    <a href="#troubleshooting">11. Troubleshooting</a>
+    <a href="#rewrite">12. Rewrite guide</a>
+  </nav>
+
+
+  <!-- ─────────────────────────────────────────── -->
+  <h2 id="overview">1. Overview</h2>
+
+  <p>
+    Phase 1 covers everything that runs on the Pi Pico.
+    The Pico is the hardware interface layer — it talks directly to motors and
+    encoders, and communicates with the RB3 over USB serial.
+    The RB3 handles all computation; the Pico only needs to execute commands
+    and report measurements.
+  </p>
+
+  <p>Responsibilities of the Pico:</p>
+  <ul>
+    <li>Count encoder pulses from both wheels using hardware interrupts</li>
+    <li>Drive motors via a dual-PWM motor driver</li>
+    <li>Receive velocity commands from the RB3 (<code>v_lin</code>, <code>v_ang</code>)</li>
+    <li>Broadcast encoder tick counts to the RB3 at 50 Hz</li>
+    <li>Stop motors automatically if no command is received within 500 ms (watchdog)</li>
+  </ul>
+
+  <p>Files in this phase:</p>
+  <ul>
+    <li><code>robot_deploy/pico/config.py</code> — all constants</li>
+    <li><code>robot_deploy/pico/main.py</code> — firmware</li>
+  </ul>
+
+
+  <!-- ─────────────────────────────────────────── -->
+  <hr class="divider">
+  <h2 id="hardware">2. Hardware setup</h2>
+
+  <h3>Assumed motor driver</h3>
+  <p>
+    A dual-PWM H-bridge driver (e.g. TB6612, DRV8833, L9110S).
+    Each motor has two PWM pins: one for forward, one for reverse.
+    Setting P1 high and P2 low drives forward; P1 low and P2 high drives reverse.
+    Both low = coast. Both high = brake.
+  </p>
+
+  <div class="note">
+    This is different from an L298N (which uses one PWM + two direction pins).
+    If your driver uses ENA/IN1/IN2, the Motor class needs to be rewritten —
+    see section 12.
+  </div>
+
+  <h3>Pin assignments (defaults)</h3>
+  <table>
+    <thead>
+      <tr><th>Signal</th><th>GPIO</th><th>Notes</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Left encoder A</td><td>10</td><td>Interrupt on rising edge</td></tr>
+      <tr><td>Left encoder B</td><td>11</td><td>Direction sense only</td></tr>
+      <tr><td>Right encoder A</td><td>12</td><td>Interrupt on rising edge</td></tr>
+      <tr><td>Right encoder B</td><td>13</td><td>Direction sense only</td></tr>
+      <tr><td>Left motor P1 (fwd)</td><td>7</td><td>PWM at 20 kHz</td></tr>
+      <tr><td>Left motor P2 (rev)</td><td>6</td><td>PWM at 20 kHz</td></tr>
+      <tr><td>Right motor P1 (fwd)</td><td>9</td><td>PWM at 20 kHz</td></tr>
+      <tr><td>Right motor P2 (rev)</td><td>8</td><td>PWM at 20 kHz</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Robot geometry</h3>
+  <table>
+    <thead>
+      <tr><th>Parameter</th><th>Value</th><th>How to measure</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Wheel radius</td><td>33.5 mm</td><td>Ruler from axle centre to ground</td></tr>
+      <tr><td>Wheel base</td><td>190 mm</td><td>Distance between the two wheel contact points</td></tr>
+      <tr><td>Encoder CPR</td><td>22</td><td>Pulses per encoder shaft revolution (datasheet)</td></tr>
+      <tr><td>Gear ratio</td><td>45:1</td><td>Motor datasheet</td></tr>
+      <tr><td>Counts/wheel rev</td><td>990</td><td>CPR × ratio = 22 × 45</td></tr>
+    </tbody>
+  </table>
+
+
+  <!-- ─────────────────────────────────────────── -->
+  <hr class="divider">
+  <h2 id="protocol">3. Communication protocol</h2>
+
+  <p>
+    The Pico communicates with the RB3 over USB serial (115200 baud).
+    Both directions use newline-delimited JSON — one JSON object per line.
+  </p>
+
+  <h3>Pico → RB3 (50 Hz)</h3>
+  <pre>{"tick_l": 12, "tick_r": 11, "tpr": 990, "ts": 34.5}</pre>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><code>tick_l</code></td><td>int</td><td>Left encoder ticks since last packet (can be negative)</td></tr>
+      <tr><td><code>tick_r</code></td><td>int</td><td>Right encoder ticks since last packet</td></tr>
+      <tr><td><code>tpr</code></td><td>int</td><td>Ticks per wheel revolution (990) — lets RB3 convert to speed</td></tr>
+      <tr><td><code>ts</code></td><td>float</td><td>Milliseconds since Pico boot, divided by 1000</td></tr>
+    </tbody>
+  </table>
+
+  <h3>RB3 → Pico (20 Hz)</h3>
+  <pre>{"v_lin": 0.25, "v_ang": -0.1}</pre>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><code>v_lin</code></td><td>float</td><td>Forward velocity in m/s (negative = reverse)</td></tr>
+      <tr><td><code>v_ang</code></td><td>float</td><td>Angular velocity in rad/s (positive = turn left)</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Motor test command (from viser panel)</h3>
+  <pre>{"d_l": 50.0, "d_r": 50.0}</pre>
+  <p>
+    Sets motor duties directly in percent [-100, 100].
+    Used for diagnosis. Detected by the presence of <code>d_l</code> or <code>d_r</code>
+    keys instead of <code>v_lin</code>/<code>v_ang</code>.
+  </p>
+
+
+  <!-- ─────────────────────────────────────────── -->
+  <hr class="divider">
+  <h2 id="encoder">4. Encoder</h2>
+
+  <p>
+    A quadrature encoder produces two square waves (A and B) offset by 90°.
+    By reading A on a rising edge and checking the level of B, you can
+    determine direction.
+  </p>
+
+  <pre>
+A: ‾|_|‾|_|‾|_|
+B:  ‾|_|‾|_|‾|_     ← B lags A → forward
+  </pre>
+
+  <p>
+    Rule: if A rises and B is high → forward (+1).
+    If A rises and B is low → reverse (−1).
+  </p>
+
+  <h3>Class: Encoder</h3>
+  <pre>
+class Encoder:
+    def __init__(self, pin_a, pin_b):
+        self._ticks = 0
+        self._a = Pin(pin_a, Pin.IN, Pin.PULL_UP)
+        self._b = Pin(pin_b, Pin.IN, Pin.PULL_UP)
+        self._a.irq(trigger=Pin.IRQ_RISING, handler=self._isr)
+
+    def _isr(self, _pin):
+        self._ticks += 1 if self._b.value() else -1
+
+    def pop(self):
+        t = self._ticks
+        self._ticks = 0
+        return t           # returns ticks since last call, resets counter
+  </pre>
+
+  <div class="note">
+    Only channel A generates interrupts. Channel B is read as a level — this
+    avoids double-counting that occurs if both channels trigger interrupts.
+    CPR = 22 means 22 rising edges per encoder shaft revolution.
+  </div>
+
+  <h3>Converting ticks to wheel speed (done on the RB3 side)</h3>
+  <pre>
+wheel_circumference = 2 * pi * 0.0335       # 0.2105 m
+wheel_speed = (ticks / 990) * wheel_circumference / dt     # m/s
+  </pre>
+
+
+  <!-- ─────────────────────────────────────────── -->
+  <hr class="divider">
+  <h2 id="motor">5. Motor driver</h2>
+
+  <p>
+    Each motor is controlled by two PWM pins. Duty cycle is 0–65535
+    (MicroPython <code>duty_u16</code> range). Frequency is set to 20 kHz to
+    keep the PWM inaudible and reduce motor heating.
+  </p>
+
+  <table>
+    <thead><tr><th>State</th><th>P1</th><th>P2</th></tr></thead>
+    <tbody>
+      <tr><td>Forward at X%</td><td>X% duty</td><td>0</td></tr>
+      <tr><td>Reverse at X%</td><td>0</td><td>X% duty</td></tr>
+      <tr><td>Coast (stop)</td><td>0</td><td>0</td></tr>
+      <tr><td>Brake</td><td>100%</td><td>100%</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Class: Motor</h3>
+  <pre>
+class Motor:
+    def __init__(self, p1_pin, p2_pin):
+        self._p1 = PWM(Pin(p1_pin)); self._p1.freq(20000)
+        self._p2 = PWM(Pin(p2_pin)); self._p2.freq(20000)
+
+    def set_duty(self, duty):          # duty in [-100, 100]
+        duty = max(-100.0, min(100.0, duty))
+        u16  = int(abs(duty) / 100.0 * 65535)
+        if duty >= 0:
+            self._p1.duty_u16(u16); self._p2.duty_u16(0)
+        else:
+            self._p1.duty_u16(0);   self._p2.duty_u16(u16)
+
+    def stop(self):
+        self._p1.duty_u16(0); self._p2.duty_u16(0)
+  </pre>
+
+
+  <!-- ─────────────────────────────────────────── -->
+  <hr class="divider">
+  <h2 id="drivetrain">6. Drive train</h2>
+
+  <p>
+    The drive train converts a body velocity command into individual wheel duties.
+    This is standard differential drive kinematics.
+  </p>
+
+  <h3>Differential drive equations</h3>
+  <pre>
+v_left  = v_lin - v_ang * (WHEEL_BASE / 2)
+v_right = v_lin + v_ang * (WHEEL_BASE / 2)
+  </pre>
+
+  <p>
+    A positive <code>v_ang</code> means turning left (counter-clockwise when
+    viewed from above): the left wheel slows and the right wheel speeds up.
+  </p>
+
+  <h3>Normalisation</h3>
+  <p>
+    If either wheel speed exceeds <code>max_v</code>, both are scaled down
+    proportionally so the robot turns at the correct ratio but within motor limits.
+  </p>
+  <pre>
+peak = max(|v_left|, |v_right|, max_v)
+duty_left  = (v_left  / peak) * 100
+duty_right = (v_right / peak) * 100
+  </pre>
+
+  <h3>Invert flags</h3>
+  <p>
+    If a motor is physically wired in reverse, set <code>INVERT_LEFT = True</code>
+    or <code>INVERT_RIGHT = True</code> in <code>config.py</code>.
+    The duty is negated before being sent to that motor.
+    Symptom of needing this: robot spins in circles when given a straight command.
+  </p>
+
+
+  <!-- ─────────────────────────────────────────── -->
+  <hr class="divider">
+  <h2 id="serial">7. Serial I/O</h2>
+
+  <p>
+    On MicroPython, the USB serial port is exposed as <code>sys.stdin</code> /
+    <code>sys.stdout</code>. Reading must be non-blocking so the encoder
+    interrupts and motor watchdog are not delayed.
+  </p>
+
+  <h3>Non-blocking read</h3>
+  <pre>
+import uselect as select
+
+_rx_buf = ""
+
+def _try_readline():
+    r, _, _ = select.select([sys.stdin], [], [], 0)   # 0 = non-blocking
+    if r:
+        ch = sys.stdin.read(1)
+        if ch in ("\n", "\r"):
+            line    = _rx_buf.strip()
+            _rx_buf = ""
+            return line if line else None
+        _rx_buf += ch
+    return None
+  </pre>
+
+  <div class="note">
+    Use <code>uselect</code>, not <code>select</code> — MicroPython's module
+    is named <code>uselect</code>. Using <code>select</code> will cause an
+    ImportError on some firmware versions.
+  </div>
+
+  <h3>Send</h3>
+  <pre>
+def _send(data):
+    sys.stdout.write(ujson.dumps(data) + "\n")
+  </pre>
+
+
+  <!-- ─────────────────────────────────────────── -->
+  <hr class="divider">
+  <h2 id="mainloop">8. Main loop</h2>
+
+  <p>
+    The main loop runs at roughly 2 kHz (<code>sleep_us(500)</code>).
+    It does three things each iteration:
+  </p>
+  <ol>
+    <li>Try to read one character from USB and parse a complete command</li>
+    <li>Check the watchdog — stop motors if no command in 500 ms</li>
+    <li>Every 20 ms, send an encoder snapshot to the RB3</li>
+  </ol>
+
+  <pre>
+last_broadcast = time.ticks_ms()
+last_cmd       = time.ticks_ms()
+
+while True:
+    now = time.ticks_ms()
+
+    line = _try_readline()
+    if line:
+        pkt = ujson.loads(line)
+        if "d_l" in pkt or "d_r" in pkt:
+            drive.set_individual(pkt["d_l"], pkt["d_r"])   # motor test
+        else:
+            drive.set_velocity(pkt["v_lin"], pkt["v_ang"])
+        last_cmd = now
+
+    # Watchdog
+    if time.ticks_diff(now, last_cmd) > 500:
+        drive.stop()
+
+    # Broadcast at 50 Hz
+    if time.ticks_diff(now, last_broadcast) >= 20:
+        _send({"tick_l": enc_l.pop(),
+               "tick_r": enc_r.pop(),
+               "tpr": 990, "ts": now / 1000.0})
+        last_broadcast = now
+
+    time.sleep_us(500)
+  </pre>
+
+  <div class="note">
+    Use <code>time.ticks_diff()</code> instead of subtraction for time
+    comparisons in MicroPython. The tick counter wraps around and
+    subtraction gives wrong results at the wrap point.
+  </div>
+
+
+  <!-- ─────────────────────────────────────────── -->
+  <hr class="divider">
+  <h2 id="config">9. Configuration reference</h2>
+
+  <p>File: <code>robot_deploy/pico/config.py</code></p>
+
+  <table>
+    <thead><tr><th>Constant</th><th>Default</th><th>What it controls</th></tr></thead>
+    <tbody>
+      <tr><td><code>CPR</code></td><td>22</td><td>Encoder pulses per shaft revolution (rising edges only)</td></tr>
+      <tr><td><code>RATIO</code></td><td>45</td><td>Gearbox reduction ratio</td></tr>
+      <tr><td><code>WHEEL_RADIUS</code></td><td>0.0335 m</td><td>Wheel radius — measure carefully, affects speed calculation</td></tr>
+      <tr><td><code>WHEEL_BASE</code></td><td>0.190 m</td><td>Distance between wheel contact points</td></tr>
+      <tr><td><code>MAX_RPM</code></td><td>150</td><td>No-load RPM at 100% duty — used to convert speed to duty</td></tr>
+      <tr><td><code>INVERT_LEFT</code></td><td>False</td><td>Set True if left motor runs backwards</td></tr>
+      <tr><td><code>INVERT_RIGHT</code></td><td>False</td><td>Set True if right motor runs backwards</td></tr>
+      <tr><td><code>BROADCAST_MS</code></td><td>20</td><td>Encoder packet interval in ms (20 = 50 Hz)</td></tr>
+      <tr><td><code>CMD_TIMEOUT_MS</code></td><td>500</td><td>Stop motors if silent for this many ms</td></tr>
+      <tr><td><code>ENC_L_A / ENC_L_B</code></td><td>10, 11</td><td>Left encoder GPIO pins</td></tr>
+      <tr><td><code>ENC_R_A / ENC_R_B</code></td><td>12, 13</td><td>Right encoder GPIO pins</td></tr>
+      <tr><td><code>M_L1 / M_L2</code></td><td>7, 6</td><td>Left motor PWM pins (forward, reverse)</td></tr>
+      <tr><td><code>M_R1 / M_R2</code></td><td>9, 8</td><td>Right motor PWM pins (forward, reverse)</td></tr>
+      <tr><td><code>MOTOR_PWM_FREQ</code></td><td>20000</td><td>PWM frequency in Hz</td></tr>
+    </tbody>
+  </table>
+
+
+  <!-- ─────────────────────────────────────────── -->
+  <hr class="divider">
+  <h2 id="testing">10. Testing checklist</h2>
+
+  <ol>
+    <li>
+      <strong>Flash MicroPython</strong><br>
+      Hold BOOTSEL, plug in USB, drag <code>.uf2</code> to RPI-RP2 drive.
+    </li>
+    <li>
+      <strong>Flash scripts</strong>
+      <pre>mpremote cp config.py :config.py
+mpremote cp main.py   :main.py
+mpremote ls                      # confirm both files exist</pre>
+    </li>
+    <li>
+      <strong>Check for startup errors</strong>
+      <pre>mpremote repl
+# press Ctrl-D to soft reset and see output</pre>
+      Expected: no traceback, silent (waiting for commands).
+    </li>
+    <li>
+      <strong>Confirm USB serial on RB3</strong>
+      <pre>lsusb                        # look for 2E8A:0005
+ls /dev/ttyACM*              # should show ttyACM0</pre>
+    </li>
+    <li>
+      <strong>Stream live odometry from RB3</strong>
+      <pre>python3 test_hardware.py</pre>
+      Spin each wheel by hand — the corresponding tick column should change.
+    </li>
+    <li>
+      <strong>Motor test via viser</strong><br>
+      Run <code>python3 main.py --no-nav</code>, open the browser,
+      go to Motor Test panel. Set Left = 40, Right = 0, click Run.
+      Only the left wheel should spin forward.
+      Repeat for right. Adjust <code>INVERT_LEFT/RIGHT</code> as needed.
+    </li>
+    <li>
+      <strong>Straight line test</strong><br>
+      In viser, switch to Manual Drive. Set Forward = 0.2, Turn = 0.
+      The robot should drive straight. If it curves, measure
+      <code>WHEEL_BASE</code> more carefully or trim <code>MAX_RPM</code>.
+    </li>
+  </ol>
+
+  <div class="success">
+    Phase 1 is complete when: both wheels spin in the correct direction,
+    encoder ticks count up when moving forward, and the robot drives
+    straight at a constant forward command.
+  </div>
+
+
+  <!-- ─────────────────────────────────────────── -->
+  <hr class="divider">
+  <h2 id="troubleshooting">11. Troubleshooting</h2>
+
+  <table>
+    <thead><tr><th>Symptom</th><th>Likely cause</th><th>Fix</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>Pico not found (<code>lsusb</code> shows nothing)</td>
+        <td>Charge-only USB cable</td>
+        <td>Replace cable with one that has data lines</td>
+      </tr>
+      <tr>
+        <td>Shows <code>2E8A:0003</code> (bootloader) instead of <code>0005</code></td>
+        <td><code>main.py</code> crashed on startup</td>
+        <td>Run <code>mpremote repl</code> then Ctrl-D to see the traceback</td>
+      </tr>
+      <tr>
+        <td>No <code>/dev/ttyACM0</code> despite Pico detected</td>
+        <td>Permission denied</td>
+        <td><code>sudo usermod -a -G dialout $USER</code> then re-login</td>
+      </tr>
+      <tr>
+        <td>ImportError: no module named <code>select</code></td>
+        <td>Wrong module name on MicroPython</td>
+        <td>Use <code>import uselect as select</code></td>
+      </tr>
+      <tr>
+        <td>Robot spins in circles</td>
+        <td>One motor wired in reverse</td>
+        <td>Set <code>INVERT_LEFT</code> or <code>INVERT_RIGHT = True</code></td>
+      </tr>
+      <tr>
+        <td>Encoder ticks don't change when wheel spins</td>
+        <td>Wrong GPIO pins or missing pull-up</td>
+        <td>Check <code>ENC_L_A/B</code> pins; encoder needs 3.3V and GND</td>
+      </tr>
+      <tr>
+        <td>Motors don't move but commands are received</td>
+        <td>Motor driver not powered</td>
+        <td>Motor driver needs its own supply (6–12V) separate from Pico 3.3V</td>
+      </tr>
+      <tr>
+        <td>Motors stop after 0.5 s</td>
+        <td>Watchdog timeout</td>
+        <td>Normal — means RB3 stopped sending commands. Check the controller.</td>
+      </tr>
+      <tr>
+        <td>Robot drifts left/right when going straight</td>
+        <td>Motors have different speeds or wrong <code>WHEEL_BASE</code></td>
+        <td>Measure wheel base more carefully; or add per-motor speed trim</td>
+      </tr>
+    </tbody>
+  </table>
+
+
+  <!-- ─────────────────────────────────────────── -->
+  <hr class="divider">
+  <h2 id="rewrite">12. Rewrite guide</h2>
+
+  <p>
+    If you want to rewrite the Pico firmware from scratch, implement these
+    four components in order. Each one is independent.
+  </p>
+
+  <h3>Component 1 — Encoder counter</h3>
+  <p>Requirements:</p>
+  <ul>
+    <li>Two instances (left, right)</li>
+    <li>Hardware interrupt on pin A, rising edge only</li>
+    <li>Read pin B inside the interrupt to determine direction</li>
+    <li>A <code>pop()</code> method that returns the count and resets it atomically</li>
+  </ul>
+
+  <h3>Component 2 — Motor driver</h3>
+  <p>Requirements:</p>
+  <ul>
+    <li>Two instances (left, right)</li>
+    <li>PWM on two pins at 20 kHz</li>
+    <li>A <code>set_duty(duty)</code> method accepting [-100, 100]</li>
+    <li>A <code>stop()</code> method that sets both pins to 0</li>
+    <li>If your driver uses ENA + IN1 + IN2 instead: one PWM pin (ENA) and two digital pins (IN1, IN2)</li>
+  </ul>
+
+  <h3>Component 3 — Drive train</h3>
+  <p>Requirements:</p>
+  <ul>
+    <li>Takes <code>v_lin</code> (m/s) and <code>v_ang</code> (rad/s)</li>
+    <li>Converts to <code>v_left</code> and <code>v_right</code> using differential drive equations</li>
+    <li>Converts speeds to duties using <code>MAX_RPM</code> and <code>WHEEL_RADIUS</code></li>
+    <li>Normalises if either duty exceeds 100%</li>
+    <li>Applies invert flags</li>
+  </ul>
+
+  <h3>Component 4 — Main loop</h3>
+  <p>Requirements:</p>
+  <ul>
+    <li>Non-blocking serial read — must not stall the loop</li>
+    <li>Parse JSON command, call drive train or motor test as appropriate</li>
+    <li>Reset watchdog timer on every received command</li>
+    <li>Stop motors if watchdog expires (500 ms default)</li>
+    <li>Send encoder packet every 20 ms</li>
+    <li>Sleep 500 µs per iteration to yield time to interrupts</li>
+  </ul>
+
+  <h3>Minimum viable packet format</h3>
+  <p>
+    You are free to change the JSON field names or switch to a binary protocol
+    (e.g. struct-packed bytes), but the RB3 side (<code>hardware.py</code>)
+    must be updated to match. The only constraint is that each message ends
+    with a newline and that <code>tpr</code> is always sent so the RB3 knows
+    how to convert ticks to speed.
+  </p>
+
+</body>
+</html>
