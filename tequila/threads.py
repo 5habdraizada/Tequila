@@ -53,6 +53,44 @@ def _push(q: queue.Queue, item) -> None:
     q.put(item)
 
 
+def planar_lock(T: np.ndarray) -> np.ndarray:
+    """Project a 4×4 camera pose onto the ground-plane motion manifold.
+
+    The robot drives on a flat floor with a level, forward-facing camera, so the
+    only real degrees of freedom are translation in the X-Z plane and yaw about
+    the world up-axis (nav-Y).  This collapses the pose to exactly that:
+
+      • rotation  → pure yaw about +Y (pitch and roll discarded)
+      • translation → X and Z kept, Y pinned to 0 (the floor-0 camera height)
+
+    Applying this every frame prevents the small per-frame VO errors in
+    pitch/roll/vertical-translation from accumulating into a tilting, drifting
+    world where the floor ends up at different heights across the map.
+    """
+    R = T[:3, :3]
+    # Camera forward (−Z in camera frame) expressed in world coords.
+    f = R @ np.array([0.0, 0.0, -1.0])
+    f[1] = 0.0                       # drop the vertical component → planar heading
+    n = float(np.linalg.norm(f))
+    if n < 1e-6:
+        theta = 0.0                  # forward points straight up/down: keep yaw=0
+    else:
+        f /= n
+        # R_y(θ) @ [0,0,-1] = [-sinθ, 0, -cosθ]  ⇒  θ = atan2(-fx, -fz)
+        theta = float(np.arctan2(-f[0], -f[2]))
+
+    c, s = np.cos(theta), np.sin(theta)
+    R_yaw = np.array([[ c, 0.0, s],
+                      [0.0, 1.0, 0.0],
+                      [-s, 0.0, c]], dtype=T.dtype)
+
+    T_out = np.eye(4, dtype=T.dtype)
+    T_out[:3, :3] = R_yaw
+    T_out[:3,  3] = T[:3, 3]
+    T_out[1,   3] = 0.0              # pin camera height to the floor-0 level
+    return T_out
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 #  Thread 1 — Frame capture
 # ─────────────────────────────────────────────────────────────────────────────
@@ -70,10 +108,15 @@ class CaptureThread(threading.Thread):
       can run.
     """
 
-    def __init__(self, source: str, interval: float, frame_skip: int) -> None:
+    def __init__(self, source: str, interval: float, frame_skip: int,
+                 odom_source=None) -> None:
         super().__init__(daemon=True, name="CaptureThread")
-        self.interval   = interval
-        self.frame_skip = frame_skip
+        self.interval    = interval
+        self.frame_skip  = frame_skip
+        # Optional callable () -> (4×4 nav camera-world pose | None).  When set,
+        # the robot's measured pose is sampled at capture time and travels with
+        # the frame so NavmeshThread can place it without visual odometry.
+        self.odom_source = odom_source
 
         try:
             cam_idx      = int(source)
@@ -116,13 +159,17 @@ class CaptureThread(threading.Thread):
                 continue
             frame_idx += 1
 
+            # Sample the robot pose at the instant the frame was captured so it
+            # is not stale by the time depth inference finishes downstream.
+            pose = self.odom_source() if self.odom_source is not None else None
+
             if self.is_file:
                 # Block until InferenceThread consumes the frame so we don't
                 # race past the whole video before inference can run.
-                frame_queue.put(frame)
+                frame_queue.put((frame, pose))
             else:
                 # Webcam: always keep the freshest frame.
-                _push(frame_queue, frame)
+                _push(frame_queue, (frame, pose))
                 time.sleep(self.interval)
 
         self.cap.release()
@@ -137,8 +184,9 @@ class InferenceThread(threading.Thread):
     """Run frame_to_result() on every incoming frame and forward the output.
 
     Pushes a tuple to pts_queue containing:
-      (nav_pts, map_pts, map_colors, img, depth_m, focal, cx, cy)
-    which is consumed by NavmeshThread.
+      (nav_pts, map_pts, map_colors, img, depth_m, focal, cx, cy, odom_T)
+    where odom_T is the capture-time robot pose (4×4) or None.  Consumed by
+    NavmeshThread.
     """
 
     def __init__(self, model, device: str) -> None:
@@ -150,7 +198,7 @@ class InferenceThread(threading.Thread):
         count = 0
         while not stop_event.is_set():
             try:
-                frame = frame_queue.get(timeout=1.0)
+                frame, pose = frame_queue.get(timeout=1.0)
             except queue.Empty:
                 continue
 
@@ -171,6 +219,7 @@ class InferenceThread(threading.Thread):
                     result["focal"],
                     result["cx"],
                     result["cy"],
+                    pose,
                 ))
             else:
                 print(f"[Inference] Frame {count:3d} | zero pts  | {dt:.2f}s")
@@ -187,10 +236,11 @@ class NavmeshThread(threading.Thread):
 
     Frame alignment
     ~~~~~~~~~~~~~~~
-    Each incoming frame is aligned to the previous one using ORB+PnP visual
-    odometry.  If that fails (too few texture features), ICP is tried as a
-    fallback.  The resulting relative transform is composed into a cumulative
-    world transform T_cum.
+    If a frame arrives stamped with a robot odometry pose (level-1 fusion), that
+    pose is used directly to place the frame — anchored so the first frame is the
+    world origin.  Otherwise each frame is aligned to the previous one using
+    SIFT+PnP visual odometry, with ICP as a fallback (too few texture features).
+    The result is a cumulative world transform T_cum.
 
     Map accumulation
     ~~~~~~~~~~~~~~~~
@@ -225,6 +275,8 @@ class NavmeshThread(threading.Thread):
         prev_focal        = None
         prev_cx           = None
         prev_cy           = None
+        odom_T0           = None   # first odometry pose (world origin anchor)
+        last_pose_T       = None   # last accumulated pose (odom duplicate skip)
 
         while not stop_event.is_set():
             got_new = False
@@ -233,12 +285,38 @@ class NavmeshThread(threading.Thread):
             while True:
                 try:
                     (new_cam, new_map_pts, new_map_colors,
-                     new_img, new_depth, focal, cx, cy) = pts_queue.get_nowait()
+                     new_img, new_depth, focal, cx, cy, odom_T) = pts_queue.get_nowait()
                 except queue.Empty:
                     break
 
                 # ── Frame alignment ───────────────────────────────────────────
-                if prev_cam is None:
+                if odom_T is not None:
+                    # Level-1 odometry fusion: place the frame using the robot's
+                    # measured wheel-odometry pose instead of visual odometry.
+                    # Anchor to the first pose so the world origin is the start.
+                    if odom_T0 is None:
+                        odom_T0 = odom_T.copy()
+                    T_cum = np.linalg.inv(odom_T0) @ odom_T
+
+                    # Duplicate-view skip: if the robot barely moved since the
+                    # last accumulated frame, drop this one to avoid piling up
+                    # redundant points at a standstill.
+                    if last_pose_T is not None:
+                        d_shift = float(np.linalg.norm(
+                            T_cum[:3, 3] - last_pose_T[:3, 3]))
+                        dR    = T_cum[:3, :3] @ last_pose_T[:3, :3].T
+                        d_ang = float(np.degrees(np.arccos(
+                            np.clip((np.trace(dR) - 1) / 2, -1, 1))))
+                        if d_shift < cfg.VO_MIN_SHIFT_M and d_ang < 1.0:
+                            prev_cam   = new_cam
+                            prev_img   = new_img
+                            prev_depth = new_depth
+                            prev_focal = focal
+                            prev_cx    = cx
+                            prev_cy    = cy
+                            continue
+
+                elif prev_cam is None:
                     # First frame: world coordinate system = camera frame 0.
                     T_cum = np.eye(4)
                 else:
@@ -315,6 +393,14 @@ class NavmeshThread(threading.Thread):
                             prev_cx    = cx
                             prev_cy    = cy
                             continue
+
+                # Ground-robot planar-motion lock: re-project the cumulative
+                # pose onto the floor plane each frame so pitch/roll/vertical
+                # drift cannot accumulate (keeps every floor at one level).
+                if cfg.PLANAR_LOCK:
+                    T_cum = planar_lock(T_cum)
+
+                last_pose_T = T_cum.copy()   # for odom duplicate-view skip
 
                 R_w = T_cum[:3, :3]
                 t_w = T_cum[:3,  3]

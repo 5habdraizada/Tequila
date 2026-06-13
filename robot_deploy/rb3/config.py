@@ -12,6 +12,21 @@ PICO_PORT = None   # None = auto-detect by USB vendor ID (2E8A = Raspberry Pi)
 WHEEL_RADIUS_M = 0.0325   # metres  0.0325
 WHEEL_BASE_M   = 0.190    # metres
 
+# ── Odometry-driven map stitching (level-1 fusion) ────────────────────────────
+# When True, each camera frame is placed in the map using the robot's measured
+# wheel-odometry pose (pos_x/pos_y/pos_theta) instead of visual odometry.
+# This is the quick experiment: if wheel odometry alone gives a clean map, VO is
+# not needed.  If the map shears on turns/slip, move to level 3 (odom as VO prior).
+ODOM_FUSION = True
+
+# Camera mount offset relative to the wheel/encoder centre, expressed in the
+# robot body frame (metres): how far the camera lens sits forward / to the left /
+# above the centre of the wheelbase.  Measure this once for your build — it
+# matters because the camera swings on a lever arm when the robot turns.
+CAM_MOUNT_FWD  = 0.0   # +forward
+CAM_MOUNT_LEFT = 0.0   # +left
+CAM_MOUNT_UP   = 0.0   # +up
+
 # ── RB3 Gen 2 camera ─────────────────────────────────────────────────────────
 # The RB3 Gen 2 exposes cameras as V4L2 devices.
 # Run `ls /dev/video*` on the RB3 to confirm the index.

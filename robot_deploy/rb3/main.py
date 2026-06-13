@@ -40,6 +40,52 @@ from hardware import HardwareBridge
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+#  Odometry → camera pose (level-1 fusion source)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def make_odom_source(hw: "HardwareBridge"):
+    """Build a callable that returns the camera's world pose (4×4, nav coords).
+
+    Converts the robot's wheel-odometry pose (pos_x forward, pos_y left,
+    pos_theta yaw) into the mapping pipeline's nav convention (X right, Y up,
+    Z toward viewer; camera looks along −Z) and applies the fixed camera mount
+    offset.  Passed to CaptureThread so each frame is stamped with the pose at
+    capture time.
+
+    Axis mapping (robot → nav):
+      robot +x (forward) → nav −Z
+      robot +y (left)    → nav −X
+      robot +z (up)      → nav +Y
+      robot yaw θ (CCW)  → nav yaw θ about +Y
+    """
+    mf = rb3_cfg.CAM_MOUNT_FWD
+    ml = rb3_cfg.CAM_MOUNT_LEFT
+    mu = rb3_cfg.CAM_MOUNT_UP
+    mount_local = np.array([-ml, mu, -mf])   # mount offset in nav axes (θ=0)
+
+    def _source():
+        od = hw.get_odometry()
+        x  = float(od["x"])                  # robot forward (m)
+        y  = float(od["y"])                  # robot left    (m)
+        th = math.radians(float(od["theta"]))  # Pico sends degrees
+
+        c, s = math.cos(th), math.sin(th)
+        R = np.array([[ c, 0.0, s],
+                      [0.0, 1.0, 0.0],
+                      [-s, 0.0, c]], dtype=np.float64)
+
+        p_body = np.array([-y, 0.0, -x], dtype=np.float64)
+        p_cam  = p_body + R @ mount_local
+
+        T = np.eye(4, dtype=np.float64)
+        T[:3, :3] = R
+        T[:3,  3] = p_cam
+        return T
+
+    return _source
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 #  EKF
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -197,10 +243,11 @@ class Controller:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def run_robot(model, device, source, port, controller: Controller | None,
-              state: RobotState):
+              state: RobotState, odom_source=None):
 
     threads = [
-        CaptureThread(source, cfg.CAPTURE_INTERVAL_S, cfg.FRAME_SKIP),
+        CaptureThread(source, cfg.CAPTURE_INTERVAL_S, cfg.FRAME_SKIP,
+                      odom_source=odom_source),
         InferenceThread(model, device),
         NavmeshThread(up_idx=1),
     ]
@@ -394,6 +441,9 @@ def main():
     parser.add_argument("--port",      type=int,   default=rb3_cfg.PORT)
     parser.add_argument("--map-depth", type=float, default=rb3_cfg.MAP_MAX_DEPTH_M)
     parser.add_argument("--no-nav",    action="store_true")
+    parser.add_argument("--no-odom-fusion", action="store_true",
+                        help="place frames with visual odometry instead of "
+                             "the robot's measured wheel-odometry pose")
     args = parser.parse_args()
 
     cfg.DEPTH_MODEL_ID  = rb3_cfg.DEPTH_MODEL_ID
@@ -411,11 +461,21 @@ def main():
                            new_data_callback=ekf.predict)
     state = RobotState()
     ctrl  = None
+    odom_source = None
 
     if not args.no_nav:
         if hw.connect():
             ctrl = Controller(hw, ekf, state)
             threading.Thread(target=ctrl.run, daemon=True).start()
+
+            # Level-1 odometry fusion: stitch the map from the robot's measured
+            # pose instead of visual odometry (unless disabled).
+            use_fusion = rb3_cfg.ODOM_FUSION and not args.no_odom_fusion
+            if use_fusion:
+                odom_source = make_odom_source(hw)
+                print("[Main] Map stitching: WHEEL ODOMETRY (level-1 fusion)")
+            else:
+                print("[Main] Map stitching: VISUAL ODOMETRY")
         else:
             print("[Main] Pico not found — mapping only")
     else:
@@ -426,7 +486,8 @@ def main():
 
     try:
         run_robot(model=model, device=device, source=str(args.camera),
-                  port=args.port, controller=ctrl, state=state)
+                  port=args.port, controller=ctrl, state=state,
+                  odom_source=odom_source)
     except KeyboardInterrupt:
         stop_event.set()
         hw.disconnect()
