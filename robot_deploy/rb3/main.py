@@ -53,29 +53,16 @@ class EKF2D:
         wb = rb3_cfg.WHEEL_BASE_M
         v  = (v_r + v_l) / 2.0
         w  = (v_r - v_l) / wb
+        hw.odometry()
         
-        # x, z, y = self.mu
-        # ny = y + w * dt
-        # self.mu = np.array([x + v*np.cos(ny)*dt,
-        #                      z - v*np.sin(ny)*dt, ny])
-
-        
-        self.mu[0] += v_l*dt
-        
-        self.mu[1] = rb3_cfg.WHEEL_RADIUS_M
-        
-        self.mu[2] = v_l
-        
-        
-        return 
-        
-        
-        
+        x, z, y = self.mu
+        ny = y + w * dt
+        self.mu = np.array([x + v*np.cos(ny)*dt,
+                             z - v*np.sin(ny)*dt, ny])
         F = np.array([[1,0,-v*np.sin(ny)*dt],
                       [0,1,-v*np.cos(ny)*dt],
                       [0,0,1]])
         self.P = F @ self.P @ F.T + self.Q
-        # print("BRRRRRRRR")
 
     def reset(self):
         self.mu = np.zeros(3, np.float64)
@@ -156,15 +143,15 @@ class Controller:
                 continue
 
             od = self.hw.get_odometry()
-            self.ekf.predict(od["v_l"], od["v_r"], od["dt"])
+            print("Ekf ", self.ekf.pose)
             rx, rz, ryaw = self.ekf.pose
 
             self.state.update(
                 v_l      = od["v_l"],
                 v_r      = od["v_r"],
-                ekf_x    = od["x"],
-                ekf_z    = od["y"],
-                ekf_yaw  = math.degrees(od["theta"]),
+                ekf_x    = rx,
+                ekf_z    = rz,
+                ekf_yaw  = math.degrees(ryaw),
                 connected = self.hw.connected,
             )
 
@@ -174,12 +161,17 @@ class Controller:
             else:
                 with self._lock:
                     path = list(self._path_pts)
-                v_lin, v_ang = self._pure_pursuit(rx, rz, ryaw, path)
+                
+                print(od["x"], od["y"], od["theta"])
+                v_lin, v_ang = self._pure_pursuit(od["x"], od["y"], od["theta"], path)
+                # print("vlin  v ang", v_lin, v_ang)
+                
 
             self.hw.send_cmd(
                 float(np.clip(v_lin, -rb3_cfg.MAX_V_LIN, rb3_cfg.MAX_V_LIN)),
                 float(np.clip(v_ang, -rb3_cfg.MAX_V_ANG, rb3_cfg.MAX_V_ANG)),
             )
+            
             self.state.update(v_lin=v_lin, v_ang=v_ang)
 
             time.sleep(max(0.0, dt - (time.time() - t0)))
@@ -393,7 +385,6 @@ def run_robot(model, device, source, port, controller: Controller | None,
         t.join(timeout=5)
     print("All threads stopped.")
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 #  Entry point
 # ─────────────────────────────────────────────────────────────────────────────
@@ -416,10 +407,11 @@ def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"[Main] Device: {device}")
 
+    ekf   = EKF2D()
     hw    = HardwareBridge(port=args.pico_port,
                            wheel_radius=rb3_cfg.WHEEL_RADIUS_M,
-                           wheel_base=rb3_cfg.WHEEL_BASE_M)
-    ekf   = EKF2D()
+                           wheel_base=rb3_cfg.WHEEL_BASE_M,
+                           new_data_callback=ekf.predict)
     state = RobotState()
     ctrl  = None
 

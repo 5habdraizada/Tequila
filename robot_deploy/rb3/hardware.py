@@ -36,10 +36,12 @@ class HardwareBridge:
 
     BAUD = 115200
 
-    def __init__(self, port: str | None, wheel_radius: float, wheel_base: float):
+    def __init__(self, port: str | None, wheel_radius: float, wheel_base: float, new_data_callback = None):
         self._port        = port           # e.g. "/dev/ttyACM0", or None → auto
         self.wheel_radius = wheel_radius
         self.wheel_base   = wheel_base
+        
+        self.new_data_callback = new_data_callback
 
         self._ser      = None
         self._running  = False
@@ -236,7 +238,9 @@ class HardwareBridge:
             self._v_l = v_l
             self._v_r = v_r
             self._dt  = dt
-            self.update_odometry()
+        
+        print("SSSSSSSSSSSSSSSSSSSS")
+        self.new_data_callback(v_l, v_r, dt)
 
 
         
