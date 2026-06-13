@@ -47,11 +47,7 @@ def update_navmesh(server, nav: dict) -> None:
     edges         = nav["edges"]
     path_pts      = nav["path_pts"]
 
-    # Note: the full coloured map (/scene/map) already shows the geometry the
-    # navmesh was built from, so we no longer draw a second grey copy here —
-    # the duplicate cloud only muddied the overlay.
-
-    # Obstacle cloud (orange)
+    # Obstacle cloud (orange) — kept in both modes as map context.
     if len(clean_obs) > 0:
         server.scene.add_point_cloud(
             "/nav/obstacles",
@@ -60,49 +56,52 @@ def update_navmesh(server, nav: dict) -> None:
             point_size = 0.015,
         )
 
-    # Graph edges (blue lines)
-    if edges:
-        ea        = np.array(edges)
-        seg_pts   = np.stack([free_nodes[ea[:, 0]],
-                               free_nodes[ea[:, 1]]], axis=1)
-        seg_color = np.tile([[0.13, 0.6, 1.0]], (len(edges), 2, 1)).astype(np.float32)
-        server.scene.add_line_segments(
-            "/nav/edges", points=seg_pts, colors=seg_color, line_width=2.0)
+    # ── Debug layers: full node grid + edge web + trajectory ──────────────────
+    # Hidden by default (cfg.NAV_PATH_ONLY) — these are what made the overlay
+    # look cluttered.  Set NAV_PATH_ONLY=False to bring them back for debugging.
+    if not cfg.NAV_PATH_ONLY:
+        # Graph edges (blue lines)
+        if edges:
+            ea        = np.array(edges)
+            seg_pts   = np.stack([free_nodes[ea[:, 0]],
+                                   free_nodes[ea[:, 1]]], axis=1)
+            seg_color = np.tile([[0.13, 0.6, 1.0]], (len(edges), 2, 1)).astype(np.float32)
+            server.scene.add_line_segments(
+                "/nav/edges", points=seg_pts, colors=seg_color, line_width=2.0)
 
-    # Blocked nodes (red)
-    if len(blocked_nodes) > 0:
-        server.scene.add_point_cloud(
-            "/nav/blocked",
-            points     = blocked_nodes,
-            colors     = np.tile([[0.8, 0.1, 0.1]], (len(blocked_nodes), 1)).astype(np.float32),
-            point_size = 0.025,
-        )
+        # Blocked nodes (red)
+        if len(blocked_nodes) > 0:
+            server.scene.add_point_cloud(
+                "/nav/blocked",
+                points     = blocked_nodes,
+                colors     = np.tile([[0.8, 0.1, 0.1]], (len(blocked_nodes), 1)).astype(np.float32),
+                point_size = 0.025,
+            )
 
-    # Free nodes (yellow)
-    if len(free_nodes) > 0:
-        server.scene.add_point_cloud(
-            "/nav/free",
-            points     = free_nodes,
-            colors     = np.tile([[1.0, 0.8, 0.0]], (len(free_nodes), 1)).astype(np.float32),
-            point_size = 0.025,
-        )
+        # Free nodes (yellow)
+        if len(free_nodes) > 0:
+            server.scene.add_point_cloud(
+                "/nav/free",
+                points     = free_nodes,
+                colors     = np.tile([[1.0, 0.8, 0.0]], (len(free_nodes), 1)).astype(np.float32),
+                point_size = 0.025,
+            )
 
-    # Robot trajectory — every camera position since frame 1 (green line)
-    trajectory = nav.get("trajectory", None)
-    if trajectory is not None and len(trajectory) >= 2:
-        traj_segs  = np.stack([trajectory[:-1], trajectory[1:]], axis=1)
-        traj_color = np.tile([[0.1, 0.9, 0.1]], (len(traj_segs), 2, 1)).astype(np.float32)
-        server.scene.add_line_segments(
-            "/nav/trajectory", points=traj_segs, colors=traj_color, line_width=3.0)
-        # Mark each recorded position as a small dot
-        server.scene.add_point_cloud(
-            "/nav/trajectory_pts",
-            points     = trajectory,
-            colors     = np.tile([[0.1, 0.9, 0.1]], (len(trajectory), 1)).astype(np.float32),
-            point_size = 0.02,
-        )
+        # Robot trajectory — every camera position since frame 1 (green line)
+        trajectory = nav.get("trajectory", None)
+        if trajectory is not None and len(trajectory) >= 2:
+            traj_segs  = np.stack([trajectory[:-1], trajectory[1:]], axis=1)
+            traj_color = np.tile([[0.1, 0.9, 0.1]], (len(traj_segs), 2, 1)).astype(np.float32)
+            server.scene.add_line_segments(
+                "/nav/trajectory", points=traj_segs, colors=traj_color, line_width=3.0)
+            server.scene.add_point_cloud(
+                "/nav/trajectory_pts",
+                points     = trajectory,
+                colors     = np.tile([[0.1, 0.9, 0.1]], (len(trajectory), 1)).astype(np.float32),
+                point_size = 0.02,
+            )
 
-    # A* path (teal line + waypoints)
+    # ── A* path (teal line + waypoints) — always shown ────────────────────────
     if len(path_pts) >= 2:
         path_segs  = np.stack([path_pts[:-1], path_pts[1:]], axis=1)
         path_color = np.tile([[0.0, 0.95, 0.88]], (len(path_segs), 2, 1)).astype(np.float32)
@@ -112,7 +111,7 @@ def update_navmesh(server, nav: dict) -> None:
             "/nav/path_nodes",
             points     = path_pts,
             colors     = np.tile([[0.0, 0.95, 0.88]], (len(path_pts), 1)).astype(np.float32),
-            point_size = 0.04,
+            point_size = 0.05,
         )
 
 
@@ -188,7 +187,7 @@ def run_viewer(model,
                     "/scene/map",
                     points     = pts,
                     colors     = colors,
-                    point_size = 0.008,
+                    point_size = cfg.POINT_SIZE,
                 )
             if not camera_set:
                 centroid = m["pts"].mean(axis=0)

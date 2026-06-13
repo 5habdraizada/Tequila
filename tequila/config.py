@@ -38,10 +38,12 @@ SOR_STD_RATIO    = 2.0    # SOR: keep points within mean + ratio×std
 # Gaussian splat rendering — replaces the raw point cloud when USE_SPLATS=True.
 # Each accumulated map point is rendered as a small isotropic 3-D Gaussian blob
 # using viser's built-in splat renderer (alpha-sorted on the GPU).
-USE_SPLATS    = True    # True = splat render; False = raw point cloud
-SPLAT_RADIUS  = 0.012   # splat half-width in metres (≈ VOXEL_SIZE × 0.6 so
-                        # adjacent splats just touch → smooth, gap-free surface)
+USE_SPLATS    = False   # True = splat render; False = raw point cloud
+                        # Raw points render crisp and solid; splats can look
+                        # blobby / washed-out depending on the viser version.
+SPLAT_RADIUS  = 0.012   # splat half-width in metres (only used if USE_SPLATS)
 SPLAT_OPACITY = 0.9     # per-splat opacity in [0, 1]
+POINT_SIZE    = 0.012   # raw point cloud dot size (metres) when USE_SPLATS=False
 
 # ── Flying-pixel / depth-edge removal ────────────────────────────────────────
 # Three-stage pipeline:
@@ -86,6 +88,9 @@ GPP_MIN_SECTORS    = 1      # min consensus sectors required to accept a plane
                              # (1 = lenient, works for product/single-room videos)
 
 # ── Navmesh grid ──────────────────────────────────────────────────────────────
+NAV_PATH_ONLY     = True   # True = show only obstacles + planned path (clean);
+                           # False = also draw the full free/blocked node grid,
+                           # edge web, and trajectory trail (debug view).
 NODE_SPACING      = 0.15   # metres between navmesh grid nodes
 NODE_ABOVE_FLOOR  = 0.04   # metres above floor for each node (avoids z-fighting)
 OBS_CLEARANCE_R   = 0.40   # obstacle clearance radius (metres) per node
