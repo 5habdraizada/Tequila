@@ -105,6 +105,15 @@ EDGE_MAX_DIST     = NODE_SPACING * 2.0  # max edge length between free nodes
 EDGE_CHECK_STEPS  = 20     # line-of-sight samples per edge (more → fewer clip-throughs)
 
 # ── Point accumulation ────────────────────────────────────────────────────────
+# Planar-motion lock — this is a ground robot driving on a flat floor, so the
+# true camera motion is only 3-DOF (x, z, yaw).  After each frame the cumulative
+# pose is projected back onto that plane: pitch/roll are removed and the camera
+# height is pinned to the floor-0 level.  This stops the per-frame VO error in
+# pitch/roll/vertical-translation from accumulating, which is what otherwise
+# stacks the floor at different heights across the map.
+# Assumes the camera is mounted ~level (forward-facing); if it is tilted down,
+# the lock axis would need to come from the detected floor normal instead.
+PLANAR_LOCK       = True
 NAV_ACCUM_VOXEL   = VOXEL_SIZE * 3  # dedup voxel for accumulated cloud
 NAV_ACCUM_MAX_PTS = 500_000         # hard cap to prevent unbounded memory growth
 ACCUM_ENABLED     = True            # False = single-frame mode (product/turntable)
