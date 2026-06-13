@@ -23,9 +23,9 @@ ODOM_FUSION = True
 # robot body frame (metres): how far the camera lens sits forward / to the left /
 # above the centre of the wheelbase.  Measure this once for your build — it
 # matters because the camera swings on a lever arm when the robot turns.
-CAM_MOUNT_FWD  = 0.0   # +forward
-CAM_MOUNT_LEFT = 0.0   # +left
-CAM_MOUNT_UP   = 0.0   # +up
+CAM_MOUNT_FWD  = 0.03   # +forward
+CAM_MOUNT_LEFT = 0.04   # +left
+CAM_MOUNT_UP   = 0.195   # +up
 
 # ── RB3 Gen 2 camera ─────────────────────────────────────────────────────────
 # The RB3 Gen 2 exposes cameras as V4L2 devices.
