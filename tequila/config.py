@@ -113,8 +113,8 @@ ICP_SUBSAMPLE   = 3000   # subsample size per cloud (for speed)
 ICP_MAX_SHIFT_M = 2.0    # max translation per frame — rejects wild drifts
 ICP_MAX_ROT_DEG = 15.0   # max rotation per frame  — rejects wild spins  (was 45.0)
 
-# ── Visual Odometry (ORB + PnP) — primary alignment ──────────────────────────
-VO_MAX_FEATURES = 2000   # ORB features per frame
+# ── Visual Odometry (SIFT + PnP) — primary alignment ─────────────────────────
+VO_MAX_FEATURES = 2000   # SIFT features per frame
 VO_RATIO_TEST   = 0.75   # Lowe's ratio test threshold for match filtering
 VO_MIN_INLIERS  = 20     # minimum PnP inliers to accept alignment  (was 12)
 VO_RANSAC_ITER  = 200    # solvePnPRansac iterations

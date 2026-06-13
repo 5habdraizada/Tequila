@@ -3,11 +3,12 @@ odometry.py — Frame-to-frame camera alignment.
 
 Two methods are provided and tried in order each frame:
 
-  1. ORB + PnP (primary)
-     Detects ORB keypoints in both frames, applies Lowe's ratio test, lifts
+  1. SIFT + PnP (primary)
+     Detects SIFT keypoints in both frames, applies Lowe's ratio test, lifts
      the matched previous-frame keypoints to 3-D using the stored depth map,
-     then calls solvePnPRansac to recover the relative pose.  Fast and accurate
-     when there is enough texture.
+     then calls solvePnPRansac to recover the relative pose.  More accurate
+     than ORB for yaw and translation estimation due to floating-point
+     descriptors and sub-pixel keypoint localisation.
 
   2. ICP (fallback)
      Point-to-point Iterative Closest Point on subsampled nav clouds.  Less
@@ -41,8 +42,8 @@ def vo_align(img_prev: np.ndarray,
     """Estimate relative camera pose between two consecutive frames.
 
     Steps:
-      1. Detect ORB keypoints in both frames.
-      2. Match descriptors with BFMatcher + Lowe's ratio test.
+      1. Detect SIFT keypoints in both frames.
+      2. Match descriptors with BFMatcher (L2) + Lowe's ratio test.
       3. Back-project matched previous-frame keypoints to 3-D using depth_prev
          (standard camera coords: Y-down, Z-into-scene).
       4. solvePnPRansac to recover R_std, t_std.
@@ -64,14 +65,14 @@ def vo_align(img_prev: np.ndarray,
     gray_prev = cv2.cvtColor(img_prev, cv2.COLOR_BGR2GRAY)
     gray_curr = cv2.cvtColor(img_curr, cv2.COLOR_BGR2GRAY)
 
-    orb       = cv2.ORB_create(nfeatures=cfg.VO_MAX_FEATURES)
-    kp1, des1 = orb.detectAndCompute(gray_prev, None)
-    kp2, des2 = orb.detectAndCompute(gray_curr, None)
+    sift      = cv2.SIFT_create(nfeatures=cfg.VO_MAX_FEATURES)
+    kp1, des1 = sift.detectAndCompute(gray_prev, None)
+    kp2, des2 = sift.detectAndCompute(gray_curr, None)
 
     if des1 is None or des2 is None or len(kp1) < 8 or len(kp2) < 8:
         return None, None, 0
 
-    bf  = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=False)
+    bf  = cv2.BFMatcher(cv2.NORM_L2, crossCheck=False)
     raw = bf.knnMatch(des1, des2, k=2)
     good = [m for m, n in raw if m.distance < cfg.VO_RATIO_TEST * n.distance]
 
