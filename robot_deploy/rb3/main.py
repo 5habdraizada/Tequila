@@ -53,6 +53,8 @@ class EKF2D:
         wb = rb3_cfg.WHEEL_BASE_M
         v  = (v_r + v_l) / 2.0
         w  = (v_r - v_l) / wb
+        hw.odometry()
+        
         x, z, y = self.mu
         ny = y + w * dt
         self.mu = np.array([x + v*np.cos(ny)*dt,
@@ -61,10 +63,6 @@ class EKF2D:
                       [0,1,-v*np.cos(ny)*dt],
                       [0,0,1]])
         self.P = F @ self.P @ F.T + self.Q
-
-    def set_pose(self, x: float, y: float, theta_deg: float):
-        """Directly set pose from Pico dead-reckoning odometry."""
-        self.mu = np.array([x, y, math.radians(theta_deg)], dtype=np.float64)
 
     def reset(self):
         self.mu = np.zeros(3, np.float64)
@@ -413,7 +411,7 @@ def main():
     hw    = HardwareBridge(port=args.pico_port,
                            wheel_radius=rb3_cfg.WHEEL_RADIUS_M,
                            wheel_base=rb3_cfg.WHEEL_BASE_M,
-                           new_data_callback=ekf.set_pose)
+                           new_data_callback=ekf.predict)
     state = RobotState()
     ctrl  = None
 
