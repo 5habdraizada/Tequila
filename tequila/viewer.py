@@ -7,8 +7,6 @@ The viewer loop polls two queues every 50 ms:
 
 Visual legend
 -------------
-  Grey  points (/nav/accum_map)  — full accumulated world geometry the navmesh
-                                    was built from; explains path in "empty" areas.
   Orange points (/nav/obstacles)  — detected obstacles (height-filtered + denoised).
   Red   points (/nav/blocked)     — navmesh nodes blocked by obstacles.
   Yellow points (/nav/free)       — free (passable) navmesh nodes.
@@ -48,16 +46,10 @@ def update_navmesh(server, nav: dict) -> None:
     blocked_nodes = nav["blocked_nodes"]
     edges         = nav["edges"]
     path_pts      = nav["path_pts"]
-    accum_pts     = nav.get("accum_pts", None)
 
-    # Full accumulated geometry — makes the navmesh interpretable
-    if accum_pts is not None and len(accum_pts) > 0:
-        server.scene.add_point_cloud(
-            "/nav/accum_map",
-            points     = accum_pts,
-            colors     = np.full((len(accum_pts), 3), 0.55, dtype=np.float32),
-            point_size = 0.015,
-        )
+    # Note: the full coloured map (/scene/map) already shows the geometry the
+    # navmesh was built from, so we no longer draw a second grey copy here —
+    # the duplicate cloud only muddied the overlay.
 
     # Obstacle cloud (orange)
     if len(clean_obs) > 0:
@@ -65,7 +57,7 @@ def update_navmesh(server, nav: dict) -> None:
             "/nav/obstacles",
             points     = clean_obs,
             colors     = np.tile([[1.0, 0.3, 0.1]], (len(clean_obs), 1)).astype(np.float32),
-            point_size = 0.04,
+            point_size = 0.015,
         )
 
     # Graph edges (blue lines)
@@ -83,7 +75,7 @@ def update_navmesh(server, nav: dict) -> None:
             "/nav/blocked",
             points     = blocked_nodes,
             colors     = np.tile([[0.8, 0.1, 0.1]], (len(blocked_nodes), 1)).astype(np.float32),
-            point_size = 0.08,
+            point_size = 0.025,
         )
 
     # Free nodes (yellow)
@@ -92,7 +84,7 @@ def update_navmesh(server, nav: dict) -> None:
             "/nav/free",
             points     = free_nodes,
             colors     = np.tile([[1.0, 0.8, 0.0]], (len(free_nodes), 1)).astype(np.float32),
-            point_size = 0.08,
+            point_size = 0.025,
         )
 
     # Robot trajectory — every camera position since frame 1 (green line)
@@ -107,7 +99,7 @@ def update_navmesh(server, nav: dict) -> None:
             "/nav/trajectory_pts",
             points     = trajectory,
             colors     = np.tile([[0.1, 0.9, 0.1]], (len(trajectory), 1)).astype(np.float32),
-            point_size = 0.06,
+            point_size = 0.02,
         )
 
     # A* path (teal line + waypoints)
@@ -120,7 +112,7 @@ def update_navmesh(server, nav: dict) -> None:
             "/nav/path_nodes",
             points     = path_pts,
             colors     = np.tile([[0.0, 0.95, 0.88]], (len(path_pts), 1)).astype(np.float32),
-            point_size = 0.12,
+            point_size = 0.04,
         )
 
 

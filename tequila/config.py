@@ -39,8 +39,9 @@ SOR_STD_RATIO    = 2.0    # SOR: keep points within mean + ratio×std
 # Each accumulated map point is rendered as a small isotropic 3-D Gaussian blob
 # using viser's built-in splat renderer (alpha-sorted on the GPU).
 USE_SPLATS    = True    # True = splat render; False = raw point cloud
-SPLAT_RADIUS  = 0.005   # splat half-width in metres  (≈ VOXEL_SIZE × 0.75)
-SPLAT_OPACITY = 0.85    # per-splat opacity in [0, 1]
+SPLAT_RADIUS  = 0.012   # splat half-width in metres (≈ VOXEL_SIZE × 0.6 so
+                        # adjacent splats just touch → smooth, gap-free surface)
+SPLAT_OPACITY = 0.9     # per-splat opacity in [0, 1]
 
 # ── Flying-pixel / depth-edge removal ────────────────────────────────────────
 # Three-stage pipeline:

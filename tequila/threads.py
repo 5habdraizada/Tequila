@@ -408,10 +408,6 @@ class NavmeshThread(threading.Thread):
             last_run = time.time()
 
             if nav is not None:
-                # Include a downsampled copy of the accumulated cloud so the
-                # viewer can show it — explains why the path visits "empty" areas.
-                nav["accum_pts"] = voxel_downsample_pts(
-                    clean_accum, cfg.NAV_ACCUM_VOXEL * 2).astype(np.float32)
                 # Full robot trajectory (one point per accepted frame)
                 nav["trajectory"] = (np.array(trajectory, dtype=np.float32)
                                      if len(trajectory) >= 2 else None)
