@@ -160,7 +160,7 @@ class Controller:
                 with self._lock:
                     path = list(self._path_pts)
                 
-                print(self._path_pts)
+                # print(self._path_pts)
                 v_lin, v_ang = self._pure_pursuit(rx, rz, ryaw, path)
                 
 
