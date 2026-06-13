@@ -53,7 +53,6 @@ class EKF2D:
         wb = rb3_cfg.WHEEL_BASE_M
         v  = (v_r + v_l) / 2.0
         w  = (v_r - v_l) / wb
-        hw.odometry()
         
         x, z, y = self.mu
         ny = y + w * dt
@@ -143,7 +142,6 @@ class Controller:
                 continue
 
             od = self.hw.get_odometry()
-            print("Ekf ", self.ekf.pose)
             rx, rz, ryaw = self.ekf.pose
 
             self.state.update(
@@ -162,9 +160,8 @@ class Controller:
                 with self._lock:
                     path = list(self._path_pts)
                 
-                print(od["x"], od["y"], od["theta"])
-                v_lin, v_ang = self._pure_pursuit(od["x"], od["y"], od["theta"], path)
-                # print("vlin  v ang", v_lin, v_ang)
+                print(self._path_pts)
+                v_lin, v_ang = self._pure_pursuit(rx, rz, ryaw, path)
                 
 
             self.hw.send_cmd(

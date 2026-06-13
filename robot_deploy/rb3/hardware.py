@@ -239,7 +239,6 @@ class HardwareBridge:
             self._v_r = v_r
             self._dt  = dt
         
-        print("SSSSSSSSSSSSSSSSSSSS")
         self.new_data_callback(v_l, v_r, dt)
 
 
