@@ -12,6 +12,8 @@ import json
 import math
 import threading
 import time
+import subprocess
+import re
 
 import serial
 import serial.tools.list_ports
@@ -47,8 +49,20 @@ class HardwareBridge:
         self._v_l     = 0.0
         self._v_r     = 0.0
         self._dt      = 0.02
+        self.distance_left = 0
+        self.ticks_left = 0
+        
+        
+        self.pos_theta = 0
+        self.pos_x = 0
+        self.pos_y = 0
+
+        self._gyro_z = 0.0
+
         self._last_ts = time.time()
-        self._tpr     = 360
+        self._tpr = 990
+
+        self._gyro_proc = None
 
     # ── connection ────────────────────────────────────────────────────────────
 
@@ -75,6 +89,7 @@ class HardwareBridge:
                 self._ser     = ser
                 self._running = True
                 threading.Thread(target=self._reader, daemon=True).start()
+                threading.Thread(target=self.gyro_read, daemon=True).start()
                 print(f"[HW] Connected to Pico on {port}")
                 return True
 
@@ -88,6 +103,10 @@ class HardwareBridge:
 
     def disconnect(self):
         self._running = False
+
+        if self._gyro_proc:
+            self._gyro_proc.terminate()
+
         if self._ser:
             try:
                 self.send_cmd(0.0, 0.0)   # stop motors
@@ -100,8 +119,82 @@ class HardwareBridge:
     def connected(self) -> bool:
         return self._running and self._ser is not None
 
-    # ── background reader ─────────────────────────────────────────────────────
+##########################################################################
+    def gyro_read(self):
+        cmd = [
+            "sudo",
+            "see_workhorse",
+            "-sensor=gyro",
+            "-sample_rate=500",
+            "-display_events=1",
+            "-duration=86400"
+        ]
 
+        try:
+            self._gyro_proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                bufsize=1
+            )
+
+            print("[GYRO] SEE gyro stream started")
+
+        except FileNotFoundError:
+            print("[GYRO] see_workhorse not found")
+            return
+
+        buf = []
+        for line in self._gyro_proc.stdout:
+            # print(line)
+
+            if not self._running:
+                break
+
+            line = line.strip()
+
+            if not line:
+                continue
+
+            buf.append(line)
+
+            # End of one sensor event block
+            if '"Time Elapsed"' in line:
+                block = "\n".join(buf)
+                # print(block)
+
+                try:
+                    # Extract:
+                    # "data" : [ x, y, z ]
+
+                    match = re.search(
+                        r'"data"\s*:\s*\[\s*'
+                        r'([-0-9.eE]+)\s*,\s*'
+                        r'([-0-9.eE]+)\s*,\s*'
+                        r'([-0-9.eE]+)',
+                        block,
+                        re.MULTILINE
+                    )
+
+                    if match:
+
+                        gx = float(match.group(1))
+                        gy = float(match.group(2))
+                        gz = float(match.group(3))
+
+                        with self._lock:
+                            self._gyro_z = gz
+
+                except (ValueError, IndexError):
+                    pass
+
+                buf.clear()
+
+        if self._gyro_proc:
+            self._gyro_proc.terminate()
+############################################################
+    # ── background reader ────────────────────────────────────────────────────
     def _reader(self):
         buf = b""
         while self._running and self._ser:
@@ -118,6 +211,7 @@ class HardwareBridge:
     def _parse(self, line: str):
         if not line:
             return
+        
         try:
             pkt = json.loads(line)
         except json.JSONDecodeError:
@@ -126,6 +220,7 @@ class HardwareBridge:
         tick_l = int(pkt.get("tick_l", 0))
         tick_r = int(pkt.get("tick_r", 0))
         tpr    = int(pkt.get("tpr",    self._tpr))
+
 
         now = time.time()
         dt  = max(1e-3, now - self._last_ts)
@@ -136,17 +231,48 @@ class HardwareBridge:
         v_l  = (tick_l / tpr) * circ / dt
         v_r  = (tick_r / tpr) * circ / dt
 
+
         with self._lock:
             self._v_l = v_l
             self._v_r = v_r
             self._dt  = dt
+            self.update_odometry()
+
+
+        
+    def wrap_angle(angle):
+        return (angle + math.pi) % (2 * math.pi) - math.pi
+
+    
+    def update_odometry(self):
+        v_delta_l = self._v_l * self._dt
+        v_delta_r = self._v_r * self._dt
+        
+        
+        v = (v_delta_l + v_delta_r) / 2
+        d_theta = (v_delta_r - v_delta_l) / self.wheel_base
+        
+        if abs(d_theta) < 1e-4:
+            self.pos_x += v * math.cos(self.pos_theta)
+            self.pos_y += v * math.sin(self.pos_theta)
+        else:
+            r = v / d_theta;
+            self.pos_x += r * (math.sin(self.pos_theta + d_theta) - math.sin(self.pos_theta));
+            self.pos_y += r * (math.cos(self.pos_theta) - math.cos(self.pos_theta + d_theta));
+        
+        self.pos_theta = HardwareBridge.wrap_angle(self.pos_theta + d_theta)
+        
+        
 
     # ── public API ────────────────────────────────────────────────────────────
+
+    def get_ticks(self):
+        return self._tpr
 
     def get_odometry(self) -> dict:
         """Latest wheel speeds — feed directly into EKF2D.predict()."""
         with self._lock:
-            return {"v_l": self._v_l, "v_r": self._v_r, "dt": self._dt}
+            return {"v_l": self._v_l, "v_r": self._v_r, "dt": self._dt,"gyro_z": self._gyro_z,"x": self.pos_x,"y": self.pos_y, "theta": self.pos_theta}
 
     def send_cmd(self, v_lin: float, v_ang: float):
         """Send velocity command to Pico."""

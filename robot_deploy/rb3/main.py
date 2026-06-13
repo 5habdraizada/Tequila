@@ -53,14 +53,29 @@ class EKF2D:
         wb = rb3_cfg.WHEEL_BASE_M
         v  = (v_r + v_l) / 2.0
         w  = (v_r - v_l) / wb
-        x, z, y = self.mu
-        ny = y + w * dt
-        self.mu = np.array([x + v*np.cos(ny)*dt,
-                             z - v*np.sin(ny)*dt, ny])
+        
+        # x, z, y = self.mu
+        # ny = y + w * dt
+        # self.mu = np.array([x + v*np.cos(ny)*dt,
+        #                      z - v*np.sin(ny)*dt, ny])
+
+        
+        self.mu[0] += v_l*dt
+        
+        self.mu[1] = rb3_cfg.WHEEL_RADIUS_M
+        
+        self.mu[2] = v_l
+        
+        
+        return 
+        
+        
+        
         F = np.array([[1,0,-v*np.sin(ny)*dt],
                       [0,1,-v*np.cos(ny)*dt],
                       [0,0,1]])
         self.P = F @ self.P @ F.T + self.Q
+        # print("BRRRRRRRR")
 
     def reset(self):
         self.mu = np.zeros(3, np.float64)
@@ -147,9 +162,9 @@ class Controller:
             self.state.update(
                 v_l      = od["v_l"],
                 v_r      = od["v_r"],
-                ekf_x    = rx,
-                ekf_z    = rz,
-                ekf_yaw  = math.degrees(ryaw),
+                ekf_x    = od["x"],
+                ekf_z    = od["y"],
+                ekf_yaw  = math.degrees(od["theta"]),
                 connected = self.hw.connected,
             )
 

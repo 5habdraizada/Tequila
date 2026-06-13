@@ -9,7 +9,7 @@ Usage:
 """
 import argparse, sys, time
 import config as rb3_cfg
-from hardware import HardwareBridge, find_pico_port
+from hardware import HardwareBridge
 
 p = argparse.ArgumentParser()
 p.add_argument("--port", default=None, help="Serial port (default: auto-detect)")
@@ -34,14 +34,17 @@ if not hw.connect():
     sys.exit(1)
 
 print(f"\nStreaming odometry — Ctrl-C to stop\n")
-print(f"{'v_l (m/s)':>12}  {'v_r (m/s)':>12}  {'dt (ms)':>10}")
-print("-" * 42)
-
+print(f"{'v_l (m/s)':>12}  {'v_r (m/s)':>12}  {'dt (ms)':>10}  {'_gyro_z (rad/s)':>10}")
+print("-" * 54)
+distance_left = 0
 try:
     while True:
+
         od = hw.get_odometry()
-        print(f"{od['v_l']:>12.4f}  {od['v_r']:>12.4f}  {od['dt']*1000:>10.1f}")
-        hw.send_cmd(0.0, 0.0)
+        print(f"{od['v_l']:>12.4f}  {od['v_r']:>12.4f}  {od['dt']*1000:>10.1f} ms  {od['gyro_z']:>10.4f} rad/s  pos x: {od['x']}")
+        
+
+        # hw.send_cmd(0.0, 0.0)
         time.sleep(0.1)
 except KeyboardInterrupt:
     print("\nDone.")

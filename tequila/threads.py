@@ -78,7 +78,13 @@ class CaptureThread(threading.Thread):
         try:
             cam_idx      = int(source)
             self.is_file = False
-            self.cap     = cv2.VideoCapture(cam_idx)
+            # self.cap     = cv2.VideoCapture(cam_idx)
+            
+            gst_pipeline = "qtiqmmfsrc name=camsrc camera=0 ! video/x-raw,format=NV12,width=1280,height=720,framerate=30/1 ! videoconvert ! appsink"
+            
+            # Open the video stream using OpenCV and GStreamer
+            self.cap = cv2.VideoCapture(gst_pipeline, cv2.CAP_GSTREAMER)
+            
             if not self.cap.isOpened():
                 raise RuntimeError(f"Cannot open camera {cam_idx}")
             self.cap.set(cv2.CAP_PROP_FRAME_WIDTH,  1280)

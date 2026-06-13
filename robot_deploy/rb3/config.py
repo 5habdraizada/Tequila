@@ -9,7 +9,7 @@ All values here are merged on top of tequila/config.py at startup.
 PICO_PORT = None   # None = auto-detect by USB vendor ID (2E8A = Raspberry Pi)
 
 # ── Robot geometry (must match pi/config.py) ──────────────────────────────────
-WHEEL_RADIUS_M = 0.0335   # metres
+WHEEL_RADIUS_M = 0.0325   # metres  0.0325
 WHEEL_BASE_M   = 0.190    # metres
 
 # ── RB3 Gen 2 camera ─────────────────────────────────────────────────────────
@@ -38,3 +38,5 @@ MAP_MAX_DEPTH_M = 3.0
 
 # ── Viser viewer ─────────────────────────────────────────────────────────────
 PORT = 8080                  # open http://<rb3-ip>:8080 on any browser on the LAN
+
+

@@ -15,6 +15,9 @@ import math
 import config as cfg
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+#  Encoder  (both-edge count on A, direction from a==b comparison)
+# ─────────────────────────────────────────────────────────────────────────────
 
 class Encoder:
     def __init__(self, pin_a: int, pin_b: int):
@@ -22,9 +25,16 @@ class Encoder:
         self._a = Pin(pin_a, Pin.IN, Pin.PULL_UP)
         self._b = Pin(pin_b, Pin.IN, Pin.PULL_UP)
         self._last_a = self._a.value()
+        self._a.irq(trigger=Pin.IRQ_RISING | Pin.IRQ_FALLING, handler=self._isr)
+        self._last_a = self._a.value()
         self._a.irq(trigger=Pin.IRQ_RISING | Pin.IRQ_FALLING, handler=self._isr, hard=True)
 
     def _isr(self, _pin):
+        a = self._a.value()
+        b = self._b.value()
+        if a != self._last_a:
+            self._ticks += 1 if (a == b) else -1
+        self._last_a = a
         a = self._a.value()
         b = self._b.value()
         if a != self._last_a:
