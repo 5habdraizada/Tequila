@@ -3,10 +3,10 @@
 import math
 
 # ── Encoder ───────────────────────────────────────────────────────────────────
-CPR   = 22    # encoder cycles per shaft revolution
+CPR   = 11    # encoder cycles per shaft revolution
 RATIO = 45    # gearbox ratio
 
-COUNTS_PER_WHEEL_REV = CPR * RATIO * 2      # 1980 (both edges counted)
+COUNTS_PER_WHEEL_REV = CPR * RATIO * 2      # 990 (both edges counted)
 TICKS_PER_REV        = COUNTS_PER_WHEEL_REV # alias used by bridge protocol
 
 # ── Robot geometry ────────────────────────────────────────────────────────────
@@ -17,10 +17,10 @@ WHEEL_CIRC   = 2 * math.pi * WHEEL_RADIUS   # ~0.2105 m
 COUNTS_PER_M = COUNTS_PER_WHEEL_REV / WHEEL_CIRC  # ~4703
 
 # ── Encoder pins (GPIO) ───────────────────────────────────────────────────────
-ENC_R_A = 12
-ENC_R_B = 13
-ENC_L_A = 10
-ENC_L_B = 11
+ENC_R_A = 11
+ENC_R_B = 10
+ENC_L_A = 12
+ENC_L_B = 13
 
 # ── Motor pins — dual PWM driver (one pin forward, one pin backward) ──────────
 # Forward:  P1 = duty,  P2 = 0
@@ -43,3 +43,4 @@ INVERT_RIGHT = True
 # ── Timing ────────────────────────────────────────────────────────────────────
 BROADCAST_MS   = 20    # send encoder packet every 20 ms = 50 Hz
 CMD_TIMEOUT_MS = 500   # stop motors if silent for 500 ms
+

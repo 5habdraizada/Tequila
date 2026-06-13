@@ -3,9 +3,6 @@ pico/main.py — MicroPython firmware for the Pi Pico.
 
 Flash alongside config.py.  Pico connects to RB3 via USB (/dev/ttyACM0).
 
-Protocol (newline-delimited JSON):
-  Pico → RB3:  {"tick_l": int, "tick_r": int, "tpr": int, "ts": float}
-  RB3 → Pico:  {"v_lin": float, "v_ang": float}
 """
 
 import sys
@@ -13,13 +10,11 @@ import uselect as select
 import time
 import ujson
 from machine import Pin, PWM
+import math
 
 import config as cfg
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  Encoder  (both-edge count on A, direction from a==b comparison)
-# ─────────────────────────────────────────────────────────────────────────────
 
 class Encoder:
     def __init__(self, pin_a: int, pin_b: int):
@@ -41,6 +36,35 @@ class Encoder:
         t = self._ticks
         self._ticks = 0
         return t
+    
+
+class Odometry:
+    def __init__(self):
+        self.theta = 0
+        self.x = 0
+        self.y = 0
+        
+    def wrap_angle(angle):
+        return (angle + math.pi) % (2 * math.pi) - math.pi
+
+    
+    def update_odometry(self, enc_l_ticks, enc_r_ticks):
+        v_delta_l = (enc_l_ticks  / cfg.TICKS_PER_REV) * cfg.WHEEL_CIRC
+        v_delta_r = (enc_r_ticks  / cfg.TICKS_PER_REV) * cfg.WHEEL_CIRC
+        
+        v = (v_delta_l + v_delta_r) / 2
+        d_theta = (v_delta_r - v_delta_l) / cfg.WHEEL_BASE
+        
+        if abs(d_theta) < 1e-4:
+            self.x += v * math.cos(self.theta)
+            self.x += v * math.sin(self.theta)
+        else:
+            r = v / d_theta;
+            self.x += r * (math.sin(self.theta + d_theta) - math.sin(self.theta));
+            self.y += r * (math.cos(self.theta) - math.cos(self.theta + d_theta));
+        
+        self.theta = Odometry.wrap_angle(self.theta + d_theta);
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -144,6 +168,7 @@ def run():
     enc_l = Encoder(cfg.ENC_L_A, cfg.ENC_L_B)
     enc_r = Encoder(cfg.ENC_R_A, cfg.ENC_R_B)
     drive = DriveTrain()
+    odometry = Odometry()
 
     last_broadcast = time.ticks_ms()
     last_cmd       = time.ticks_ms()
@@ -173,9 +198,14 @@ def run():
 
         # Broadcast encoder snapshot at 50 Hz
         if time.ticks_diff(now, last_broadcast) >= cfg.BROADCAST_MS:
+            enc_l_ticks = enc_l.pop()
+            enc_r_ticks = enc_r.pop()   
+            odometry.update_odometry(enc_l_ticks, enc_r_ticks)            
+            
             _send({
-                "tick_l": enc_l.pop(),
-                "tick_r": enc_r.pop(),
+                "pos_x": odometry.x,
+                "pos_y": odometry.y,
+                "pos_theta": (odometry.theta/math.pi)*180,
                 "tpr":    cfg.TICKS_PER_REV,    # 990
                 "ts":     now / 1000.0,
             })
@@ -185,3 +215,5 @@ def run():
 
 
 run()
+
+
