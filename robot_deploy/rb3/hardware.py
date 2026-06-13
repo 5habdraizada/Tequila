@@ -213,34 +213,27 @@ class HardwareBridge:
     def _parse(self, line: str):
         if not line:
             return
-        
         try:
             pkt = json.loads(line)
         except json.JSONDecodeError:
             return
 
-        tick_l = int(pkt.get("tick_l", 0))
-        tick_r = int(pkt.get("tick_r", 0))
-        tpr    = int(pkt.get("tpr",    self._tpr))
-
+        pos_x     = float(pkt.get("pos_x",     self.pos_x))
+        pos_y     = float(pkt.get("pos_y",     self.pos_y))
+        pos_theta = float(pkt.get("pos_theta", self.pos_theta))
 
         now = time.time()
         dt  = max(1e-3, now - self._last_ts)
         self._last_ts = now
-        self._tpr     = tpr
-
-        circ = 2 * math.pi * self.wheel_radius
-        v_l  = (tick_l / tpr) * circ / dt
-        v_r  = (tick_r / tpr) * circ / dt
-
 
         with self._lock:
-            self._v_l = v_l
-            self._v_r = v_r
-            self._dt  = dt
-        
-        print("SSSSSSSSSSSSSSSSSSSS")
-        self.new_data_callback(v_l, v_r, dt)
+            self.pos_x     = pos_x
+            self.pos_y     = pos_y
+            self.pos_theta = pos_theta
+            self._dt       = dt
+
+        if self.new_data_callback:
+            self.new_data_callback(pos_x, pos_y, pos_theta)
 
 
         
