@@ -21,7 +21,7 @@ CAMERA_HEIGHT = 720
 
 # ── Navigation ────────────────────────────────────────────────────────────────
 # Maximum linear and angular speed sent to the Pi
-MAX_V_LIN  = 0.05           # m/s  — conservative for first runs
+MAX_V_LIN  = 0.1           # m/s  — conservative for first runs
 MAX_V_ANG  = 1.0           # rad/s
 
 # Look-ahead distance for pure-pursuit path following
