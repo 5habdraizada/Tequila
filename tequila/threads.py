@@ -161,7 +161,14 @@ class CaptureThread(threading.Thread):
 
             # Sample the robot pose at the instant the frame was captured so it
             # is not stale by the time depth inference finishes downstream.
-            pose = self.odom_source() if self.odom_source is not None else None
+            # Guard against a faulty source: degrade to visual odometry (pose=None)
+            # rather than killing the capture thread (which would stop all frames).
+            pose = None
+            if self.odom_source is not None:
+                try:
+                    pose = self.odom_source()
+                except Exception as e:   # noqa: BLE001 — never let capture die
+                    print(f"[Capture] odom_source error: {e} — using VO this frame")
 
             if self.is_file:
                 # Block until InferenceThread consumes the frame so we don't

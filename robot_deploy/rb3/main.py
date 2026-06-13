@@ -43,39 +43,46 @@ from hardware import HardwareBridge
 #  Odometry → camera pose (level-1 fusion source)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def make_odom_source(hw: "HardwareBridge"):
+def make_odom_source(ekf: "EKF2D"):
     """Build a callable that returns the camera's world pose (4×4, nav coords).
 
-    Converts the robot's wheel-odometry pose (pos_x forward, pos_y left,
-    pos_theta yaw) into the mapping pipeline's nav convention (X right, Y up,
-    Z toward viewer; camera looks along −Z) and applies the fixed camera mount
-    offset.  Passed to CaptureThread so each frame is stamped with the pose at
-    capture time.
+    The Pico streams raw encoder ticks; HardwareBridge turns them into wheel
+    velocities and the EKF integrates those into the robot pose (x, z, yaw),
+    already expressed in the map's ground plane (nav X-Z, Y up).  This converts
+    that pose into the *camera's* world pose for map stitching, accounting for:
 
-    Axis mapping (robot → nav):
-      robot +x (forward) → nav −Z
-      robot +y (left)    → nav −X
-      robot +z (up)      → nav +Y
-      robot yaw θ (CCW)  → nav yaw θ about +Y
+      • the camera mount offset (forward / left / up of the wheel centre), which
+        swings on a lever arm as the robot turns, and
+      • the 90° between the EKF body frame (forward = +X at yaw 0) and the camera
+        convention (the camera looks along −Z).
+
+    Passed to CaptureThread so each frame is stamped with the pose at capture.
     """
     mf = rb3_cfg.CAM_MOUNT_FWD
     ml = rb3_cfg.CAM_MOUNT_LEFT
     mu = rb3_cfg.CAM_MOUNT_UP
-    mount_local = np.array([-ml, mu, -mf])   # mount offset in nav axes (θ=0)
+    HALF_PI = math.pi / 2.0
 
     def _source():
-        od = hw.get_odometry()
-        x  = float(od["x"])                  # robot forward (m)
-        y  = float(od["y"])                  # robot left    (m)
-        th = math.radians(float(od["theta"]))  # Pico sends degrees
+        ex, ez, eyaw = ekf.pose              # robot pose in nav X-Z plane (Y up)
 
-        c, s = math.cos(th), math.sin(th)
+        # Robot body axes expressed in world (nav) coords.
+        cf, sf = math.cos(eyaw), math.sin(eyaw)
+        fwd_w  = np.array([ cf, 0.0, -sf])   # robot forward (R_y(yaw)·+X)
+        left_w = np.array([-sf, 0.0, -cf])   # robot left    (up × forward)
+        up_w   = np.array([0.0, 1.0,  0.0])  # robot up
+
+        # Camera position = robot body position + mounted lever-arm offset.
+        p_cam = (np.array([ex, 0.0, ez], dtype=np.float64)
+                 + mf * fwd_w + ml * left_w + mu * up_w)
+
+        # Camera looks along robot forward.  Camera −Z must map to robot forward,
+        # so the camera rotation is yaw − 90° about +Y (body +X-forward → −Z-cam).
+        phi  = eyaw - HALF_PI
+        c, s = math.cos(phi), math.sin(phi)
         R = np.array([[ c, 0.0, s],
                       [0.0, 1.0, 0.0],
                       [-s, 0.0, c]], dtype=np.float64)
-
-        p_body = np.array([-y, 0.0, -x], dtype=np.float64)
-        p_cam  = p_body + R @ mount_local
 
         T = np.eye(4, dtype=np.float64)
         T[:3, :3] = R
@@ -472,8 +479,8 @@ def main():
             # pose instead of visual odometry (unless disabled).
             use_fusion = rb3_cfg.ODOM_FUSION and not args.no_odom_fusion
             if use_fusion:
-                odom_source = make_odom_source(hw)
-                print("[Main] Map stitching: WHEEL ODOMETRY (level-1 fusion)")
+                odom_source = make_odom_source(ekf)
+                print("[Main] Map stitching: WHEEL ODOMETRY via EKF (level-1 fusion)")
             else:
                 print("[Main] Map stitching: VISUAL ODOMETRY")
         else:
