@@ -117,6 +117,10 @@ GPP_MIN_SECTORS    = 1      # min consensus sectors required to accept a plane
 NAV_PATH_ONLY     = True   # True = show only obstacles + planned path (clean);
                            # False = also draw the full free/blocked node grid,
                            # edge web, and trajectory trail (debug view).
+NAV_GOAL_REACHED_M = 0.5   # exploration goal commitment: keep heading to the
+                           # current goal until the robot is within this distance
+                           # (or it becomes unreachable), instead of re-picking the
+                           # farthest node every recompute — stops the path churn.
 NODE_SPACING      = 0.15   # metres between navmesh grid nodes
 NODE_ABOVE_FLOOR  = 0.04   # metres above floor for each node (avoids z-fighting)
 OBS_CLEARANCE_R   = 0.40   # obstacle clearance radius (metres) per node
