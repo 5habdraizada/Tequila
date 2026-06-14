@@ -19,6 +19,13 @@ WHEEL_BASE_M   = 0.172    # metres
 # not needed.  If the map shears on turns/slip, move to level 3 (odom as VO prior).
 ODOM_FUSION = True
 
+# Visual-odometry drift correction of the EKF.  When True, VO measures the
+# actual camera motion each frame and nudges the EKF (odometry + vision fused).
+# When False, the map stitches from PURE wheel+gyro odometry with no visual
+# correction — useful for isolating how good the raw odometry is on its own.
+# Also live-toggleable from the "VO drift correction" checkbox in the viewer.
+USE_VO_CORRECTION = True
+
 # Camera mount offset relative to the wheel/encoder centre, expressed in the
 # robot body frame (metres): how far the camera lens sits forward / to the left /
 # above the centre of the wheelbase.  Measure this once for your build — it

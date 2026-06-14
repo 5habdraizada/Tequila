@@ -370,11 +370,18 @@ class Controller:
 def run_robot(model, device, source, port, controller: Controller | None,
               state: RobotState, odom_source=None, vo_update_cb=None):
 
+    nav_thread  = NavmeshThread(up_idx=1, vo_update_cb=vo_update_cb)
+    vo_cb_full  = vo_update_cb          # remember it so the toggle can restore it
+    # Start with the config default: when VO correction is off the map stitches
+    # from pure wheel+gyro odometry (no visual correction of the EKF).
+    if not rb3_cfg.USE_VO_CORRECTION:
+        nav_thread.vo_update_cb = None
+
     threads = [
         CaptureThread(source, cfg.CAPTURE_INTERVAL_S, cfg.FRAME_SKIP,
                       odom_source=odom_source),
         InferenceThread(model, device),
-        NavmeshThread(up_idx=1, vo_update_cb=vo_update_cb),
+        nav_thread,
     ]
     for t in threads:
         t.start()
@@ -418,6 +425,10 @@ def run_robot(model, device, source, port, controller: Controller | None,
             "Undistort FOV (°)", min=50.0, max=120.0, step=1.0,
             initial_value=float(cfg.UNDISTORT_FOV_DEG))
         g_reset_map  = server.gui.add_button("Reset Map")
+        g_vo_corr    = server.gui.add_checkbox(
+            "VO drift correction",
+            initial_value=bool(rb3_cfg.USE_VO_CORRECTION and vo_cb_full is not None))
+        g_vo_corr.disabled = vo_cb_full is None   # nothing to toggle without VO
 
     # ── callbacks ─────────────────────────────────────────────────────────────
 
@@ -474,6 +485,14 @@ def run_robot(model, device, source, port, controller: Controller | None,
     @g_reset_map.on_click
     def _reset_map(_):
         reset_map_event.set()
+
+    @g_vo_corr.on_update
+    def _toggle_vo_corr(_):
+        # On  → VO measures camera motion and corrects the EKF (odom + vision).
+        # Off → map stitches from pure wheel+gyro odometry, no visual correction.
+        nav_thread.vo_update_cb = vo_cb_full if g_vo_corr.value else None
+        print(f"[Main] VO drift correction: "
+              f"{'ENABLED' if g_vo_corr.value else 'DISABLED (pure odometry)'}")
 
     # ── helpers ───────────────────────────────────────────────────────────────
 
