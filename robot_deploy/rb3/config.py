@@ -34,6 +34,33 @@ CAMERA_INDEX = 0            # /dev/video0  (change if needed)
 CAMERA_WIDTH  = 1280
 CAMERA_HEIGHT = 720
 
+# Horizontal field of view of the capture, in degrees.
+# Thundercomm kit lens (1.42 mm focal) on the 1/2.3" IMX577 (1.55 µm pixels):
+#   sensor width 4056·1.55µm = 6.287 mm  →  HFOV = 2·atan(6.287/(2·1.42)) ≈ 128°
+# This assumes the 1280×720 capture uses the FULL sensor width (vertical crop to
+# 16:9).  If the live FOV slider's sweet-spot is far from 128, the ISP is
+# cropping horizontally instead — set this to whatever the slider lands on.
+# NOTE: this is a *fisheye* lens.  128° is only a pinhole approximation that is
+# correct at the image centre; the edges follow r=f·θ, not r=f·tanθ, so they
+# still distort.  With FISHEYE=True below this value is unused (the frame is
+# undistorted to a true rectilinear image first).
+FOV_H_DEG = 128.0
+
+# ── Fisheye undistortion (Thundercomm kit lens on the IMX577) ─────────────────
+# Undistort each frame from fisheye to rectilinear before depth, so the pinhole
+# back-projection is valid (kills the radial fan-splay in the map).
+# Equidistant model from the lens optics:
+#   f_full = 1.42 mm / 1.55 µm ≈ 916 px at the 4056-px full sensor width.
+FISHEYE              = True
+FISHEYE_FOCAL_MM     = 1.42     # lens focal length (mm)
+SENSOR_PIXEL_UM      = 1.55     # sensor pixel pitch (µm)
+SENSOR_FULL_WIDTH_PX = 4056     # full sensor width (px); 1280 capture = full-width
+UNDISTORT_FOV_DEG    = 90.0     # output rectilinear HFOV (tune live; keep < ~128°)
+# Measured fisheye calibration from tools/camera_calibration.py.  Once the .npz
+# exists (repo root or cwd) it overrides the equidistant approximation above.
+FISHEYE_CALIB_NPZ    = "tools/fishEye_RB3_CameraCalibration_fisheye.npz"
+FISHEYE_CALIB_WH     = (1280, 720)   # capture_calibration.py grabs at 1280×720
+
 # ── Navigation ────────────────────────────────────────────────────────────────
 # Maximum linear and angular speed sent to the Pi
 MAX_V_LIN  = 0.1           # m/s  — conservative for first runs

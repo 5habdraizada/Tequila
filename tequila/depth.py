@@ -15,6 +15,8 @@ Provides:
       Returns a dict ready for the inference thread to pass downstream.
 """
 
+import os
+
 import cv2
 import numpy as np
 import torch
@@ -91,6 +93,104 @@ def depth_edge_mask(depth_m: np.ndarray) -> np.ndarray:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+#  Fisheye → rectilinear undistortion
+# ─────────────────────────────────────────────────────────────────────────────
+
+_undistort_cache: dict = {}
+_calib_cache: dict = {}   # cached (K, D, (W_cal, H_cal)) loaded from the .npz
+
+
+def _resolve_calib_path(path: str) -> str | None:
+    """Locate the calibration .npz: try as given, then relative to the repo root."""
+    if not path:
+        return None
+    if os.path.isabs(path) and os.path.exists(path):
+        return path
+    if os.path.exists(path):                       # relative to cwd
+        return os.path.abspath(path)
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    cand = os.path.join(repo_root, path)
+    return cand if os.path.exists(cand) else None
+
+
+def _load_calibration():
+    """Load measured fisheye intrinsics from cfg.FISHEYE_CALIB_NPZ, or None.
+
+    Expects the keys written by tools/camera_calibration.py:
+      camMatrix (3×3 K) and distCoeff (4×1 D), captured at cfg.FISHEYE_CALIB_WH.
+    """
+    path = getattr(cfg, "FISHEYE_CALIB_NPZ", "") or ""
+    resolved = _resolve_calib_path(path)
+    if resolved is None:
+        return None
+    if resolved in _calib_cache:
+        return _calib_cache[resolved]
+    try:
+        data = np.load(resolved)
+        K = np.asarray(data["camMatrix"], dtype=np.float64)
+        D = np.asarray(data["distCoeff"], dtype=np.float64).reshape(4, 1)
+        wh = tuple(getattr(cfg, "FISHEYE_CALIB_WH", (1280, 720)))
+        result = (K, D, wh)
+        print(f"[Depth] Loaded fisheye calibration from {resolved} "
+              f"(calibrated at {wh[0]}×{wh[1]})")
+    except (OSError, KeyError, ValueError) as e:
+        print(f"[Depth] Could not load fisheye calibration ({e}); "
+              "using equidistant approximation")
+        result = None
+    _calib_cache[resolved] = result
+    return result
+
+
+def _get_undistort_maps(w: int, h: int):
+    """Build (and cache) the fisheye→rectilinear remap for an image of size w×h.
+
+    Uses the measured calibration (cfg.FISHEYE_CALIB_NPZ) when available —
+    scaling the camera matrix from the calibration resolution to w×h and using
+    the real distortion coefficients.  Falls back to an equidistant model
+    (cv2.fisheye, distortion=0) derived from the lens optics:
+      f_full = FISHEYE_FOCAL_MM / SENSOR_PIXEL_UM   (px at full sensor)
+      f_fish = f_full × (w / SENSOR_FULL_WIDTH_PX)
+
+    The output focal is chosen so the rectilinear result spans UNDISTORT_FOV_DEG.
+    Returns (map1, map2, f_out) for cv2.remap; f_out is the focal of the
+    undistorted (rectilinear) image, used for back-projection.
+    """
+    key = (w, h, round(cfg.UNDISTORT_FOV_DEG, 3))
+    cached = _undistort_cache.get(key)
+    if cached is not None:
+        return cached
+
+    calib = _load_calibration()
+    if calib is not None:
+        # Measured intrinsics — scale K from the calibration resolution to w×h
+        # (intrinsics scale linearly with uniform image resize; D is unchanged).
+        K_cal, D, (w_cal, h_cal) = calib
+        sx, sy = w / float(w_cal), h / float(h_cal)
+        K = K_cal.copy()
+        K[0, 0] *= sx; K[0, 2] *= sx
+        K[1, 1] *= sy; K[1, 2] *= sy
+    else:
+        # Equidistant approximation from the lens optics (distortion = 0).
+        f_full = cfg.FISHEYE_FOCAL_MM / (cfg.SENSOR_PIXEL_UM * 1e-3)
+        f_fish = f_full * (w / cfg.SENSOR_FULL_WIDTH_PX)
+        K = np.array([[f_fish, 0.0, w / 2.0],
+                      [0.0, f_fish, h / 2.0],
+                      [0.0, 0.0, 1.0]], dtype=np.float64)
+        D = np.zeros((4, 1), dtype=np.float64)   # pure equidistant (r = f·θ)
+
+    f_out = (w / 2.0) / np.tan(np.radians(cfg.UNDISTORT_FOV_DEG / 2.0))
+    P = np.array([[f_out, 0.0, w / 2.0],
+                  [0.0, f_out, h / 2.0],
+                  [0.0, 0.0, 1.0]], dtype=np.float64)
+
+    map1, map2 = cv2.fisheye.initUndistortRectifyMap(
+        K, D, np.eye(3), P, (w, h), cv2.CV_16SC2)
+    result = (map1, map2, float(f_out))
+    _undistort_cache[key] = result
+    return result
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 #  Depth inference
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -116,7 +216,15 @@ def run_inference(img: np.ndarray, model) -> tuple[np.ndarray, float, float, flo
     img = cv2.resize(img, (cfg.INFER_WIDTH, ih), interpolation=cv2.INTER_AREA)
     h, w = img.shape[:2]
 
-    focal  = w / (2.0 * np.tan(np.radians(cfg.FOV_H_DEG / 2.0)))
+    if getattr(cfg, "FISHEYE", False):
+        # Undistort fisheye → rectilinear so the pinhole back-projection is valid.
+        # Depth then runs on the rectilinear image and back-projection uses the
+        # output focal.  (Output FOV < lens FOV ⇒ no black borders to mask.)
+        map1, map2, focal = _get_undistort_maps(w, h)
+        img = cv2.remap(img, map1, map2, interpolation=cv2.INTER_LINEAR,
+                        borderMode=cv2.BORDER_CONSTANT)
+    else:
+        focal = w / (2.0 * np.tan(np.radians(cfg.FOV_H_DEG / 2.0)))
     cx, cy = w / 2.0, h / 2.0
 
     depth_processor, depth_model_hf = model

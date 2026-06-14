@@ -17,6 +17,27 @@ DEPTH_MODEL_ID = "depth-anything/Depth-Anything-V2-Metric-Indoor-Small-hf"
 INFER_WIDTH    = 1280    # inference image width (try 640 on CPU for speed)
 MAX_DEPTH_M    = 10.0    # clip anything beyond this distance (metres)
 FOV_H_DEG      = 70.0   # horizontal field of view of the camera (degrees)
+                        # (pinhole back-projection FOV; ignored when FISHEYE=True)
+
+# ── Fisheye undistortion ──────────────────────────────────────────────────────
+# When True, each frame is undistorted from a fisheye to a rectilinear image
+# before depth inference, so the pinhole back-projection (r = f·tanθ) becomes
+# valid.  The lens is modelled as an equidistant fisheye (r = f·θ); near the
+# centre all fisheye models agree, and the paraxial focal is fixed by the optics
+# (focal_mm / pixel_pitch), so the central undistorted region is well-determined.
+# After undistortion the back-projection focal is the OUTPUT rectilinear focal
+# derived from UNDISTORT_FOV_DEG.
+FISHEYE              = False
+FISHEYE_FOCAL_MM     = 1.42     # lens focal length (mm)
+SENSOR_PIXEL_UM      = 1.55     # sensor pixel pitch (µm)
+SENSOR_FULL_WIDTH_PX = 4056     # full sensor width (px); capture assumed full-width
+UNDISTORT_FOV_DEG    = 90.0     # output rectilinear HFOV — keep below the lens's
+                                # true FOV (~128°) so there are no black borders
+# Measured calibration (preferred over the equidistant approximation above).
+# Point this at the .npz from tools/camera_calibration.py (keys camMatrix,
+# distCoeff).  Empty string → fall back to the equidistant model.
+FISHEYE_CALIB_NPZ    = ""
+FISHEYE_CALIB_WH     = (1280, 720)   # resolution the calibration was captured at
 
 # ── Capture / timing ──────────────────────────────────────────────────────────
 CAPTURE_INTERVAL_S = 3.0   # seconds between webcam captures

@@ -41,6 +41,8 @@ pts_queue     = queue.Queue(maxsize=1)   # per-frame depth data (tuple)
 navmesh_queue = queue.Queue(maxsize=1)   # navmesh overlay dict
 map_queue     = queue.Queue(maxsize=1)   # accumulated coloured point cloud
 stop_event    = threading.Event()        # set this to shut down all threads
+reset_map_event = threading.Event()      # set to clear the accumulated map
+                                         # (e.g. after changing camera FOV)
 
 
 def _push(q: queue.Queue, item) -> None:
@@ -286,6 +288,20 @@ class NavmeshThread(threading.Thread):
         last_pose_T       = None   # last accumulated pose (odom duplicate skip)
 
         while not stop_event.is_set():
+            # Map reset (e.g. after changing camera FOV) — drop all accumulated
+            # geometry and start fresh so old, wrongly-projected points don't
+            # linger alongside newly-projected ones.
+            if reset_map_event.is_set():
+                reset_map_event.clear()
+                accum_pts = accum_pts_fine = accum_colors = None
+                T_cum       = np.eye(4)
+                trajectory  = []
+                prev_cam = prev_img = prev_depth = None
+                prev_focal = prev_cx = prev_cy = None
+                odom_T0 = last_pose_T = None
+                last_run = 0.0
+                print("[Navmesh] Map reset — accumulation cleared")
+
             got_new = False
 
             # Drain pts_queue — process all pending frames before sleeping.

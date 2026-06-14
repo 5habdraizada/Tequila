@@ -32,7 +32,7 @@ from tequila.depth   import load_model
 from tequila.viewer  import update_navmesh
 from tequila.threads import (
     CaptureThread, InferenceThread, NavmeshThread,
-    map_queue, navmesh_queue, stop_event,
+    map_queue, navmesh_queue, stop_event, reset_map_event,
 )
 
 import config as rb3_cfg
@@ -296,6 +296,10 @@ def run_robot(model, device, source, port, controller: Controller | None,
 
     with server.gui.add_folder("🗺 Map"):
         g_reset_pose = server.gui.add_button("Reset EKF Pose")
+        g_fov        = server.gui.add_slider(
+            "Undistort FOV (°)", min=50.0, max=120.0, step=1.0,
+            initial_value=float(cfg.UNDISTORT_FOV_DEG))
+        g_reset_map  = server.gui.add_button("Reset Map")
 
     # ── callbacks ─────────────────────────────────────────────────────────────
 
@@ -341,6 +345,17 @@ def run_robot(model, device, source, port, controller: Controller | None,
     def _reset_pose(_):
         if controller:
             controller.ekf.reset()
+
+    @g_fov.on_update
+    def _set_fov(_):
+        # Output rectilinear FOV of the fisheye undistortion.  The remap is
+        # rebuilt automatically on the next frame; click "Reset Map" to clear
+        # the cloud built with the old FOV.
+        cfg.UNDISTORT_FOV_DEG = float(g_fov.value)
+
+    @g_reset_map.on_click
+    def _reset_map(_):
+        reset_map_event.set()
 
     # ── helpers ───────────────────────────────────────────────────────────────
 
@@ -456,7 +471,19 @@ def main():
     cfg.DEPTH_MODEL_ID  = rb3_cfg.DEPTH_MODEL_ID
     cfg.INFER_WIDTH     = args.width
     cfg.MAP_MAX_DEPTH_M = args.map_depth
+    cfg.FOV_H_DEG       = rb3_cfg.FOV_H_DEG   # RB3 wide-angle camera (see rb3 config)
     cfg.ACCUM_ENABLED   = True
+
+    # Fisheye undistortion for the RB3's wide-angle lens.
+    cfg.FISHEYE              = rb3_cfg.FISHEYE
+    cfg.FISHEYE_FOCAL_MM     = rb3_cfg.FISHEYE_FOCAL_MM
+    cfg.SENSOR_PIXEL_UM      = rb3_cfg.SENSOR_PIXEL_UM
+    cfg.SENSOR_FULL_WIDTH_PX = rb3_cfg.SENSOR_FULL_WIDTH_PX
+    cfg.UNDISTORT_FOV_DEG    = rb3_cfg.UNDISTORT_FOV_DEG
+    cfg.FISHEYE_CALIB_NPZ    = rb3_cfg.FISHEYE_CALIB_NPZ
+    cfg.FISHEYE_CALIB_WH     = rb3_cfg.FISHEYE_CALIB_WH
+    cfg.FISHEYE_CALIB_NPZ    = rb3_cfg.FISHEYE_CALIB_NPZ
+    cfg.FISHEYE_CALIB_WH     = rb3_cfg.FISHEYE_CALIB_WH
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"[Main] Device: {device}")
