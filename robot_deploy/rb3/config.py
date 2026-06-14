@@ -89,6 +89,11 @@ USE_TSDF     = True
 TSDF_VOXEL_M = 0.03          # voxel size (m) — smaller = finer + slower/more RAM
 TSDF_TRUNC_M = 0.12          # signed-distance truncation (~4 voxels)
 
+# ── Timing / capture ──────────────────────────────────────────────────────────
+MIN_FRAME_BRIGHTNESS = 10.0  # skip near-black warm-up frames (mean < this)
+NAV_INTERVAL_S       = 2.5   # recompute the navmesh less often so its (blocking)
+                             # pass doesn't stall the map display as often
+
 # ── Viser viewer ─────────────────────────────────────────────────────────────
 PORT = 8080                  # open http://<rb3-ip>:8080 on any browser on the LAN
 

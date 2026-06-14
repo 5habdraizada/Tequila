@@ -162,6 +162,14 @@ class CaptureThread(threading.Thread):
                 continue
             frame_idx += 1
 
+            # Skip near-black frames (camera warm-up / dropouts).  On boot the
+            # sensor streams a few dark/garbage frames before exposure settles;
+            # fusing those drops a black blob at the world origin.
+            if (not self.is_file and cfg.MIN_FRAME_BRIGHTNESS > 0
+                    and float(frame.mean()) < cfg.MIN_FRAME_BRIGHTNESS):
+                time.sleep(0.05)
+                continue
+
             # Sample the robot pose at the instant the frame was captured so it
             # is not stale by the time depth inference finishes downstream.
             # Guard against a faulty source: degrade to visual odometry (pose=None)
@@ -274,6 +282,7 @@ class NavmeshThread(threading.Thread):
 
     def run(self) -> None:
         last_run: float   = 0.0
+        last_map_run: float = 0.0  # last TSDF map extract+push (display cadence)
         accum_pts         = None   # coarse world-space positions (navmesh RANSAC)
         accum_pts_fine    = None   # fine world-space positions   (display)
         accum_colors      = None   # colours matching accum_pts_fine
@@ -509,31 +518,34 @@ class NavmeshThread(threading.Thread):
 
                 got_new = True
 
+            now = time.time()
+
             if use_tsdf:
                 if frames_integrated == 0:
-                    time.sleep(0.3)
-                    continue
-            elif accum_pts is None:
-                time.sleep(0.5)
-                continue
-            if not got_new:
-                time.sleep(0.2)
-                continue
-
-            now = time.time()
-            if now - last_run < cfg.NAV_INTERVAL_S:
-                time.sleep(0.2)
-                continue
-
-            # ── TSDF: extract the fused cloud for display + navmesh ────────────
-            if use_tsdf:
-                ex_pts, ex_cols = tsdf.extract()
-                if len(ex_pts) < cfg.MIN_FLOOR_POINTS * 2:
-                    last_run = time.time()
                     time.sleep(0.2)
                     continue
-                _push(map_queue, dict(pts=ex_pts, colors=ex_cols))
-                accum_pts = voxel_downsample_pts(ex_pts, cfg.NAV_ACCUM_VOXEL)
+                # Map refresh (fast): extract the fused surface and push it for
+                # display on its own cadence, decoupled from the slower (blocking)
+                # navmesh recompute so newly-seen areas appear promptly.
+                if got_new and now - last_map_run >= cfg.MAP_INTERVAL_S:
+                    last_map_run = now
+                    ex_pts, ex_cols = tsdf.extract()
+                    if len(ex_pts) >= cfg.MIN_FLOOR_POINTS * 2:
+                        _push(map_queue, dict(pts=ex_pts, colors=ex_cols))
+                        accum_pts = voxel_downsample_pts(ex_pts, cfg.NAV_ACCUM_VOXEL)
+                if accum_pts is None or now - last_run < cfg.NAV_INTERVAL_S:
+                    time.sleep(0.1)
+                    continue
+            else:
+                if accum_pts is None:
+                    time.sleep(0.5)
+                    continue
+                if not got_new:
+                    time.sleep(0.2)
+                    continue
+                if now - last_run < cfg.NAV_INTERVAL_S:
+                    time.sleep(0.2)
+                    continue
 
             # ── Navmesh recompute ─────────────────────────────────────────────
             cam_world_pos = T_cum[:3, 3]

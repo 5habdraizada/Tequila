@@ -480,6 +480,10 @@ def main():
     cfg.TSDF_VOXEL_M = rb3_cfg.TSDF_VOXEL_M
     cfg.TSDF_TRUNC_M = rb3_cfg.TSDF_TRUNC_M
 
+    # Timing / capture
+    cfg.MIN_FRAME_BRIGHTNESS = rb3_cfg.MIN_FRAME_BRIGHTNESS
+    cfg.NAV_INTERVAL_S       = rb3_cfg.NAV_INTERVAL_S
+
     # Fisheye undistortion for the RB3's wide-angle lens.
     cfg.FISHEYE              = rb3_cfg.FISHEYE
     cfg.FISHEYE_FOCAL_MM     = rb3_cfg.FISHEYE_FOCAL_MM

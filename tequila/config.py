@@ -43,6 +43,11 @@ FISHEYE_CALIB_WH     = (1280, 720)   # resolution the calibration was captured a
 CAPTURE_INTERVAL_S = 3.0   # seconds between webcam captures
 FRAME_SKIP         = 30    # process every Nth video frame (video-file mode)
 NAV_INTERVAL_S     = 1.0   # seconds between navmesh recomputes
+MAP_INTERVAL_S     = 0.5   # seconds between map refreshes (TSDF extract+display);
+                           # decoupled from NAV_INTERVAL_S so the cloud updates
+                           # promptly instead of waiting on the navmesh recompute
+MIN_FRAME_BRIGHTNESS = 0.0 # skip webcam frames whose mean brightness is below
+                           # this (camera warm-up / black frames).  0 = disabled
 PORT               = 8080  # viser web-viewer port
 
 # ── Segmentation (unused in default pipeline, kept for reference) ─────────────
