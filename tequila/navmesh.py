@@ -455,7 +455,8 @@ def astar_graph(free_nodes: np.ndarray,
 def compute_navmesh(pts: np.ndarray,
                     up_idx: int,
                     camera_origin: np.ndarray | None = None,
-                    camera_forward: np.ndarray | None = None) -> dict | None:
+                    camera_forward: np.ndarray | None = None,
+                    prev_goal: np.ndarray | None = None) -> dict | None:
     """Run the full navmesh pipeline on an accumulated point cloud.
 
     Orchestrates floor detection → node generation → obstacle denoising →
@@ -530,26 +531,40 @@ def compute_navmesh(pts: np.ndarray,
     free_nodes,  blocked_nodes = filter_nodes(nodes, collision_obs)
     edges                      = build_edges(free_nodes, collision_obs)
 
-    # Frontier-exploration path: start at the free node nearest the camera,
-    # then try goals from farthest to nearest until A* finds a connected path.
-    path_pts = np.zeros((0, 3))
+    # Exploration path with goal commitment: start at the free node nearest the
+    # camera.  Keep heading to the previous goal (if still reachable and not yet
+    # reached) so the path doesn't churn every recompute; only when there is no
+    # committed goal do we pick a fresh frontier (farthest reachable node).
+    path_pts    = np.zeros((0, 3))
+    chosen_goal = None
     if len(free_nodes) >= 2 and edges:
         node_tree  = KDTree(free_nodes)
         start_idx  = int(node_tree.query(camera_origin)[1])
 
-        dists_from_cam  = np.linalg.norm(free_nodes - camera_origin, axis=1)
-        goal_candidates = np.argsort(-dists_from_cam)   # farthest first
+        # 1) Stay committed to the previous goal while it's still valid.
+        if prev_goal is not None:
+            reached = (float(np.linalg.norm(camera_origin - prev_goal))
+                       < cfg.NAV_GOAL_REACHED_M)
+            if not reached:
+                goal_idx = int(node_tree.query(prev_goal)[1])
+                if goal_idx != start_idx:
+                    path_idx = astar_graph(free_nodes, edges, start_idx, goal_idx)
+                    if path_idx:
+                        path_pts    = free_nodes[path_idx]
+                        chosen_goal = free_nodes[goal_idx]
 
-        path_idx: list[int] = []
-        for goal_idx in goal_candidates:
-            if goal_idx == start_idx:
-                continue
-            path_idx = astar_graph(free_nodes, edges, start_idx, int(goal_idx))
-            if path_idx:
-                break   # found the farthest reachable node
-
-        if path_idx:
-            path_pts = free_nodes[path_idx]
+        # 2) No committed goal (reached / unreachable): pick the farthest
+        #    reachable node as a new frontier.
+        if chosen_goal is None:
+            dists_from_cam  = np.linalg.norm(free_nodes - camera_origin, axis=1)
+            for goal_idx in np.argsort(-dists_from_cam):
+                if goal_idx == start_idx:
+                    continue
+                path_idx = astar_graph(free_nodes, edges, start_idx, int(goal_idx))
+                if path_idx:
+                    path_pts    = free_nodes[path_idx]
+                    chosen_goal = free_nodes[int(goal_idx)]
+                    break
 
     print(f"[Navmesh] floor={len(floor_idx):,}  "
           f"obs(display/collision)={len(display_obs):,}/{len(collision_obs):,}  "
@@ -562,5 +577,7 @@ def compute_navmesh(pts: np.ndarray,
         blocked_nodes = blocked_nodes.astype(np.float32),
         edges         = edges,
         path_pts      = path_pts.astype(np.float32),
+        goal          = (None if chosen_goal is None
+                         else chosen_goal.astype(np.float32)),
         lambda_min    = lambda_min,
     )

@@ -299,6 +299,8 @@ class NavmeshThread(threading.Thread):
         prev_cy           = None
         odom_T0           = None   # first odometry pose (world origin anchor)
         last_pose_T       = None   # last accumulated pose (odom duplicate skip)
+        current_goal      = None   # committed exploration goal (persists between
+                                   # recomputes so the path stops churning)
         prev_odom_T       = None   # odom T_cum matching the frame in prev_img
 
         # Optional TSDF volumetric fusion (averages overlapping views instead of
@@ -327,6 +329,8 @@ class NavmeshThread(threading.Thread):
                 trajectory  = []
                 prev_cam = prev_img = prev_depth = None
                 prev_focal = prev_cx = prev_cy = None
+                odom_T0 = last_pose_T = None
+                current_goal = None
                 odom_T0 = last_pose_T = prev_odom_T = None
                 last_run = 0.0
                 if tsdf is not None:
@@ -595,12 +599,15 @@ class NavmeshThread(threading.Thread):
             t0  = time.time()
             nav = compute_navmesh(clean_accum, self.up_idx,
                                   camera_origin  = cam_world_pos,
-                                  camera_forward = cam_world_fwd)
+                                  camera_forward = cam_world_fwd,
+                                  prev_goal      = current_goal)
             dt  = time.time() - t0
             print(f"[Navmesh] Done in {dt:.2f}s")
             last_run = time.time()
 
             if nav is not None:
+                # Persist the committed exploration goal for the next recompute.
+                current_goal = nav.get("goal")
                 # Full robot trajectory (one point per accepted frame)
                 nav["trajectory"] = (np.array(trajectory, dtype=np.float32)
                                      if len(trajectory) >= 2 else None)
