@@ -301,8 +301,11 @@ def frame_to_nav_pts(img: np.ndarray,
         map_pts    = np.zeros((0, 3), dtype=np.float32)
         map_colors = np.zeros((0, 3), dtype=np.float32)
 
-    # Coarse position-only cloud — full depth range for navmesh RANSAC.
-    nav_pts = voxel_downsample_pts(all_pts, cfg.VOXEL_SIZE * 3)
+    # Coarse position-only cloud for the navmesh.  Cap the range: distant depth
+    # error is multiplied by distance, so far points become spurious obstacles
+    # and floor noise (the scattered far dots / fan arms in the map).
+    nav_src = all_pts[np.abs(all_pts[:, 2]) <= cfg.NAV_MAX_DEPTH_M]
+    nav_pts = voxel_downsample_pts(nav_src, cfg.VOXEL_SIZE * 3)
 
     return (nav_pts.astype(np.float32),
             map_pts.astype(np.float32),

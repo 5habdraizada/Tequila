@@ -140,6 +140,9 @@ NAV_ACCUM_MAX_PTS = 500_000         # hard cap to prevent unbounded memory growt
 ACCUM_ENABLED     = True            # False = single-frame mode (product/turntable)
 MAP_MAX_DEPTH_M   = 3.0             # only accumulate points within this distance
                                      # (limits fan-arm length when alignment drifts)
+NAV_MAX_DEPTH_M   = 5.0             # cap depth used for the navmesh cloud — distant
+                                     # depth error is multiplied by range, so far
+                                     # points become spurious obstacles / floor noise
 
 # ── ICP frame alignment (fallback when ORB+PnP fails) ────────────────────────
 ICP_MAX_DIST    = 1.0    # max correspondence distance (metres)

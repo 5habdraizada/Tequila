@@ -471,6 +471,7 @@ def main():
     cfg.DEPTH_MODEL_ID  = rb3_cfg.DEPTH_MODEL_ID
     cfg.INFER_WIDTH     = args.width
     cfg.MAP_MAX_DEPTH_M = args.map_depth
+    cfg.NAV_MAX_DEPTH_M = rb3_cfg.NAV_MAX_DEPTH_M
     cfg.FOV_H_DEG       = rb3_cfg.FOV_H_DEG   # RB3 wide-angle camera (see rb3 config)
     cfg.ACCUM_ENABLED   = True
 

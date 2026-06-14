@@ -76,7 +76,10 @@ WP_REACHED_M = 0.20         # metres
 # Use the small indoor metric model — fast enough on RB3 CPU
 DEPTH_MODEL_ID = "depth-anything/Depth-Anything-V2-Metric-Indoor-Small-hf"
 INFER_WIDTH    = 640         # lower res for speed on embedded CPU
-MAP_MAX_DEPTH_M = 3.0
+MAP_MAX_DEPTH_M = 2.0        # display cloud: keep only nearby, reliable geometry
+                             # (far points smear into fan arms)
+NAV_MAX_DEPTH_M = 4.0        # navmesh cloud: a bit further for look-ahead, but
+                             # still capped to drop far obstacle/floor noise
 
 # ── Viser viewer ─────────────────────────────────────────────────────────────
 PORT = 8080                  # open http://<rb3-ip>:8080 on any browser on the LAN
