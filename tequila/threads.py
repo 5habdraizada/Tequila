@@ -271,9 +271,10 @@ class NavmeshThread(threading.Thread):
 
     Navmesh recompute
     ~~~~~~~~~~~~~~~~~
-    Once NAV_INTERVAL_S seconds have elapsed since the last recompute and at
-    least one new frame has arrived, compute_navmesh() is called on the
-    accumulated cloud and the result is pushed to navmesh_queue.
+    Runs in a separate worker thread so the (1-2 s) compute_navmesh pass never
+    stalls frame accumulation or the map display.  The main loop publishes the
+    latest cloud + camera pose under a lock; the worker picks it up every
+    NAV_INTERVAL_S, recomputes, and pushes the result to navmesh_queue.
     """
 
     def __init__(self, up_idx: int, vo_update_cb=None) -> None:
@@ -282,9 +283,12 @@ class NavmeshThread(threading.Thread):
         # Optional callback(p_cam, R_cam, n_inliers) — called whenever VO
         # produces a reliable camera world pose so the EKF can be corrected.
         self.vo_update_cb = vo_update_cb
+        # Shared hand-off to the navmesh worker thread.
+        self._nav_lock  = threading.Lock()
+        self._nav_input = None      # (accum_pts, cam_pos, cam_fwd, trajectory)
+        self._nav_reset = False     # signal the worker to drop its committed goal
 
     def run(self) -> None:
-        last_run: float   = 0.0
         last_map_run: float = 0.0  # last TSDF map extract+push (display cadence)
         accum_pts         = None   # coarse world-space positions (navmesh RANSAC)
         accum_pts_fine    = None   # fine world-space positions   (display)
@@ -299,9 +303,13 @@ class NavmeshThread(threading.Thread):
         prev_cy           = None
         odom_T0           = None   # first odometry pose (world origin anchor)
         last_pose_T       = None   # last accumulated pose (odom duplicate skip)
-        current_goal      = None   # committed exploration goal (persists between
-                                   # recomputes so the path stops churning)
-        prev_odom_T       = None   # odom T_cum matching the frame in prev_img
+        prev_odom_T       = None   # odom T_cum matching the frame in prev_img (VO)
+
+        # Navmesh runs in its own thread so its slow recompute never blocks this
+        # accumulation / map-display loop.  The committed exploration goal lives
+        # in the worker.
+        threading.Thread(target=self._navmesh_worker, daemon=True,
+                         name="NavmeshWorker").start()
 
         # Optional TSDF volumetric fusion (averages overlapping views instead of
         # piling up raw points).  Falls back to point accumulation if Open3D is
@@ -329,13 +337,13 @@ class NavmeshThread(threading.Thread):
                 trajectory  = []
                 prev_cam = prev_img = prev_depth = None
                 prev_focal = prev_cx = prev_cy = None
-                odom_T0 = last_pose_T = None
-                current_goal = None
                 odom_T0 = last_pose_T = prev_odom_T = None
-                last_run = 0.0
                 if tsdf is not None:
                     tsdf.reset()
                     frames_integrated = 0
+                with self._nav_lock:
+                    self._nav_input = None
+                    self._nav_reset = True
                 print("[Navmesh] Map reset — accumulation cleared")
 
             got_new = False
@@ -561,31 +569,62 @@ class NavmeshThread(threading.Thread):
                     time.sleep(0.2)
                     continue
                 # Map refresh (fast): extract the fused surface and push it for
-                # display on its own cadence, decoupled from the slower (blocking)
-                # navmesh recompute so newly-seen areas appear promptly.
+                # display on its own cadence, decoupled from the navmesh worker
+                # so newly-seen areas appear promptly.
                 if got_new and now - last_map_run >= cfg.MAP_INTERVAL_S:
                     last_map_run = now
                     ex_pts, ex_cols = tsdf.extract()
                     if len(ex_pts) >= cfg.MIN_FLOOR_POINTS * 2:
                         _push(map_queue, dict(pts=ex_pts, colors=ex_cols))
                         accum_pts = voxel_downsample_pts(ex_pts, cfg.NAV_ACCUM_VOXEL)
-                if accum_pts is None or now - last_run < cfg.NAV_INTERVAL_S:
-                    time.sleep(0.1)
-                    continue
-            else:
-                if accum_pts is None:
-                    time.sleep(0.5)
-                    continue
-                if not got_new:
-                    time.sleep(0.2)
-                    continue
-                if now - last_run < cfg.NAV_INTERVAL_S:
-                    time.sleep(0.2)
-                    continue
 
-            # ── Navmesh recompute ─────────────────────────────────────────────
-            cam_world_pos = T_cum[:3, 3]
-            cam_world_fwd = T_cum[:3, :3] @ np.array([0.0, 0.0, -1.0])
+            # Publish the latest cloud + camera pose for the navmesh worker.
+            # This is a cheap reference hand-off — the worker does the heavy
+            # SOR + compute_navmesh on its own thread.
+            if got_new and accum_pts is not None:
+                traj = (np.array(trajectory, dtype=np.float32)
+                        if len(trajectory) >= 2 else None)
+                with self._nav_lock:
+                    self._nav_input = (
+                        accum_pts,
+                        T_cum[:3, 3].copy(),
+                        T_cum[:3, :3] @ np.array([0.0, 0.0, -1.0]),
+                        traj,
+                    )
+
+            time.sleep(0.1 if use_tsdf else 0.05)
+
+        print("[Navmesh] Stopped")
+
+    # ── Navmesh worker (separate thread) ──────────────────────────────────────
+    def _navmesh_worker(self) -> None:
+        """Recompute the navmesh on the latest published cloud, off the main loop.
+
+        Reads the (accum_pts, camera pose, trajectory) snapshot published by
+        run(), recomputes the navmesh every NAV_INTERVAL_S, and pushes the result
+        to navmesh_queue.  Keeps its own committed exploration goal so the path
+        does not churn between recomputes.
+        """
+        current_goal = None
+        last_run     = 0.0
+        while not stop_event.is_set():
+            with self._nav_lock:
+                if self._nav_reset:
+                    self._nav_reset = False
+                    current_goal = None
+                inp = self._nav_input
+
+            if inp is None:
+                time.sleep(0.2)
+                continue
+            if time.time() - last_run < cfg.NAV_INTERVAL_S:
+                time.sleep(0.1)
+                continue
+
+            accum_pts, cam_world_pos, cam_world_fwd, traj = inp
+            if accum_pts is None or len(accum_pts) < cfg.MIN_FLOOR_POINTS * 2:
+                time.sleep(0.2)
+                continue
 
             # Adaptive SOR: scale nb down on large clouds so the KDTree query
             # does not dominate runtime.
@@ -601,16 +640,12 @@ class NavmeshThread(threading.Thread):
                                   camera_origin  = cam_world_pos,
                                   camera_forward = cam_world_fwd,
                                   prev_goal      = current_goal)
-            dt  = time.time() - t0
-            print(f"[Navmesh] Done in {dt:.2f}s")
+            print(f"[Navmesh] Done in {time.time() - t0:.2f}s")
             last_run = time.time()
 
             if nav is not None:
-                # Persist the committed exploration goal for the next recompute.
-                current_goal = nav.get("goal")
-                # Full robot trajectory (one point per accepted frame)
-                nav["trajectory"] = (np.array(trajectory, dtype=np.float32)
-                                     if len(trajectory) >= 2 else None)
+                current_goal      = nav.get("goal")   # commit goal across recomputes
+                nav["trajectory"] = traj
                 _push(navmesh_queue, nav)
 
-        print("[Navmesh] Stopped")
+        print("[Navmesh] Worker stopped")
