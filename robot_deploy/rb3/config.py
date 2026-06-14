@@ -27,6 +27,34 @@ CAM_MOUNT_FWD  = 0.03   # +forward
 CAM_MOUNT_LEFT = 0.04   # +left
 CAM_MOUNT_UP   = 0.195   # +up
 
+# ── RB3 onboard IMU (Qualcomm SDF / see_workhorse) ───────────────────────────
+# Gyroscope yaw rate — used in EKF predict instead of the encoder differential.
+# The IMU is far more accurate for rotation than wheel-speed difference, which
+# suffers from wheel-radius mismatch and slip on turns.
+#
+# GYRO_SCALE:    unit conversion factor.  see_workhorse reports in rad/s → 1.0.
+#                Set to math.pi/180 if it reports in deg/s.
+# GYRO_YAW_SIGN: 1 if a left turn gives a positive gyro_z reading, -1 otherwise.
+#                Quick test: command the robot to turn left and check the sign
+#                printed by the "[EKF/VO]" lines.
+GYRO_SCALE    = 1.0   # rad/s (Qualcomm SDF default)
+GYRO_YAW_SIGN = 1     # flip to -1 if yaw direction appears inverted
+# Safety clamp applied to the gyro yaw rate before it enters the EKF.
+# Catches unit mismatches (e.g. deg/s read as rad/s) and sensor glitches.
+# Set to roughly 2× the robot's real maximum angular speed.
+MAX_GYRO_RATE = 3.0   # rad/s  (~172 °/s; RB3 max is 1 rad/s so 3× headroom)
+
+# Accelerometer forward axis — data is collected and available via
+# get_odometry()["accel_fwd"] for diagnostics and future use.
+# NOTE: raw accelerometer output includes gravity (≈9.81 m/s²) whenever the
+# forward axis is not perfectly level.  This constant bias accumulates into
+# an unbounded velocity if integrated without subtracting the static offset
+# measured while the robot is stationary.  Accel integration is therefore
+# disabled in the EKF until a calibration step is added; only the gyro is
+# fused right now.
+ACCEL_FWD_IDX  = 0   # X assumed forward on the RB3 Gen 2 mounting
+ACCEL_FWD_SIGN = 1   # positive = forward; flip to -1 if wrong
+
 # ── RB3 Gen 2 camera ─────────────────────────────────────────────────────────
 # The RB3 Gen 2 exposes cameras as V4L2 devices.
 # Run `ls /dev/video*` on the RB3 to confirm the index.

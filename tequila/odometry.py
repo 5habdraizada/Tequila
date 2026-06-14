@@ -91,8 +91,8 @@ def vo_align(img_prev: np.ndarray,
         if not (0 <= ui < wd and 0 <= vi < hd):
             continue
         d = float(depth_prev[vi, ui])
-        if d < 0.05 or d >= cfg.MAX_DEPTH_M * 0.99:
-            continue   # skip missing or saturated depth
+        if d < 0.05 or d > cfg.MAP_MAX_DEPTH_M or d >= cfg.MAX_DEPTH_M * 0.99:
+            continue   # skip missing, saturated, or far depth (noisy for PnP)
 
         # Standard pinhole back-projection (no Y/Z flip)
         x3 = (u1 - cx) * d / focal

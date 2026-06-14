@@ -36,12 +36,16 @@ class HardwareBridge:
 
     BAUD = 115200
 
-    def __init__(self, port: str | None, wheel_radius: float, wheel_base: float, new_data_callback = None):
+    def __init__(self, port: str | None, wheel_radius: float, wheel_base: float,
+                 new_data_callback=None,
+                 accel_fwd_idx: int = 0, accel_fwd_sign: float = 1.0):
         self._port        = port           # e.g. "/dev/ttyACM0", or None → auto
         self.wheel_radius = wheel_radius
         self.wheel_base   = wheel_base
-        
+
         self.new_data_callback = new_data_callback
+        self._accel_fwd_idx  = accel_fwd_idx
+        self._accel_fwd_sign = accel_fwd_sign
 
         self._ser      = None
         self._running  = False
@@ -53,18 +57,20 @@ class HardwareBridge:
         self._dt      = 0.02
         self.distance_left = 0
         self.ticks_left = 0
-        
-        
+
         self.pos_theta = 0
         self.pos_x = 0
         self.pos_y = 0
 
-        self._gyro_z = 0.0
+        # IMU readings (updated by gyro_read / accel_read threads)
+        self._gyro_z   = 0.0   # yaw rate  (rad/s, RB3 frame)
+        self._accel_fwd = 0.0  # forward acceleration (m/s², robot frame)
 
         self._last_ts = time.time()
         self._tpr = 990
 
-        self._gyro_proc = None
+        self._gyro_proc  = None
+        self._accel_proc = None
 
     # ── connection ────────────────────────────────────────────────────────────
 
@@ -90,8 +96,9 @@ class HardwareBridge:
 
                 self._ser     = ser
                 self._running = True
-                threading.Thread(target=self._reader, daemon=True).start()
-                threading.Thread(target=self.gyro_read, daemon=True).start()
+                threading.Thread(target=self._reader,   daemon=True).start()
+                threading.Thread(target=self.gyro_read,  daemon=True).start()
+                threading.Thread(target=self.accel_read, daemon=True).start()
                 print(f"[HW] Connected to Pico on {port}")
                 return True
 
@@ -108,6 +115,8 @@ class HardwareBridge:
 
         if self._gyro_proc:
             self._gyro_proc.terminate()
+        if self._accel_proc:
+            self._accel_proc.terminate()
 
         if self._ser:
             try:
@@ -195,6 +204,78 @@ class HardwareBridge:
 
         if self._gyro_proc:
             self._gyro_proc.terminate()
+
+##########################################################################
+    def accel_read(self):
+        """Read forward linear acceleration from the RB3 IMU at 200 Hz.
+
+        Uses the same see_workhorse mechanism as gyro_read().  The forward
+        component (configured by accel_fwd_idx / accel_fwd_sign) is stored
+        in _accel_fwd and passed to the EKF predict step so the state's
+        velocity dimension integrates real acceleration rather than relying
+        solely on wheel encoders.
+        """
+        cmd = [
+            "sudo",
+            "see_workhorse",
+            "-sensor=accel",
+            "-sample_rate=200",
+            "-display_events=1",
+            "-duration=86400",
+        ]
+
+        try:
+            self._accel_proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                bufsize=1,
+            )
+            print("[ACCEL] SEE accel stream started")
+        except FileNotFoundError:
+            print("[ACCEL] see_workhorse not found — accel disabled")
+            return
+
+        buf = []
+        for line in self._accel_proc.stdout:
+            if not self._running:
+                break
+
+            line = line.strip()
+            if not line:
+                continue
+
+            buf.append(line)
+
+            if '"Time Elapsed"' in line:
+                block = "\n".join(buf)
+                try:
+                    match = re.search(
+                        r'"data"\s*:\s*\[\s*'
+                        r'([-0-9.eE]+)\s*,\s*'
+                        r'([-0-9.eE]+)\s*,\s*'
+                        r'([-0-9.eE]+)',
+                        block,
+                        re.MULTILINE,
+                    )
+                    if match:
+                        vals = [
+                            float(match.group(1)),
+                            float(match.group(2)),
+                            float(match.group(3)),
+                        ]
+                        fwd = vals[self._accel_fwd_idx] * self._accel_fwd_sign
+                        with self._lock:
+                            self._accel_fwd = fwd
+                except (ValueError, IndexError):
+                    pass
+
+                buf.clear()
+
+        if self._accel_proc:
+            self._accel_proc.terminate()
+
 ############################################################
     # ── background reader ────────────────────────────────────────────────────
     def _reader(self):
@@ -238,8 +319,10 @@ class HardwareBridge:
             self._v_l = v_l
             self._v_r = v_r
             self._dt  = dt
-        
-        self.new_data_callback(v_l, v_r, dt)
+            gyro_z   = self._gyro_z    # snapshot latest IMU readings
+            accel_fwd = self._accel_fwd
+
+        self.new_data_callback(v_l, v_r, dt, gyro_z, accel_fwd)
 
 
         
@@ -273,9 +356,18 @@ class HardwareBridge:
         return self._tpr
 
     def get_odometry(self) -> dict:
-        """Latest wheel speeds — feed directly into EKF2D.predict()."""
+        """Latest wheel speeds and IMU readings."""
         with self._lock:
-            return {"v_l": self._v_l, "v_r": self._v_r, "dt": self._dt,"gyro_z": self._gyro_z,"x": self.pos_x,"y": self.pos_y, "theta": self.pos_theta}
+            return {
+                "v_l":       self._v_l,
+                "v_r":       self._v_r,
+                "dt":        self._dt,
+                "gyro_z":    self._gyro_z,
+                "accel_fwd": self._accel_fwd,
+                "x":         self.pos_x,
+                "y":         self.pos_y,
+                "theta":     self.pos_theta,
+            }
 
     def send_cmd(self, v_lin: float, v_ang: float):
         """Send velocity command to Pico."""

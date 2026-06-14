@@ -276,9 +276,12 @@ class NavmeshThread(threading.Thread):
     accumulated cloud and the result is pushed to navmesh_queue.
     """
 
-    def __init__(self, up_idx: int) -> None:
+    def __init__(self, up_idx: int, vo_update_cb=None) -> None:
         super().__init__(daemon=True, name="NavmeshThread")
         self.up_idx = up_idx
+        # Optional callback(p_cam, R_cam, n_inliers) — called whenever VO
+        # produces a reliable camera world pose so the EKF can be corrected.
+        self.vo_update_cb = vo_update_cb
 
     def run(self) -> None:
         last_run: float   = 0.0
@@ -296,6 +299,7 @@ class NavmeshThread(threading.Thread):
         prev_cy           = None
         odom_T0           = None   # first odometry pose (world origin anchor)
         last_pose_T       = None   # last accumulated pose (odom duplicate skip)
+        prev_odom_T       = None   # odom T_cum matching the frame in prev_img
 
         # Optional TSDF volumetric fusion (averages overlapping views instead of
         # piling up raw points).  Falls back to point accumulation if Open3D is
@@ -323,7 +327,7 @@ class NavmeshThread(threading.Thread):
                 trajectory  = []
                 prev_cam = prev_img = prev_depth = None
                 prev_focal = prev_cx = prev_cy = None
-                odom_T0 = last_pose_T = None
+                odom_T0 = last_pose_T = prev_odom_T = None
                 last_run = 0.0
                 if tsdf is not None:
                     tsdf.reset()
@@ -365,14 +369,31 @@ class NavmeshThread(threading.Thread):
                             prev_focal = focal
                             prev_cx    = cx
                             prev_cy    = cy
+                            prev_odom_T = T_cum.copy()
                             continue
+
+                    # VO side-run for EKF correction — odom places the frame,
+                    # VO measures the actual camera motion to correct EKF drift.
+                    if (self.vo_update_cb is not None
+                            and prev_img is not None
+                            and prev_odom_T is not None):
+                        R_vo, t_vo, n_vo = vo_align(
+                            prev_img, prev_depth, new_img,
+                            prev_focal, prev_cx, prev_cy)
+                        if R_vo is not None and n_vo >= cfg.VO_MIN_INLIERS:
+                            # Anchor VO delta to the odom pose of the previous
+                            # accepted frame so each update is independent.
+                            p_cam_vo = prev_odom_T[:3, :3] @ t_vo + prev_odom_T[:3, 3]
+                            R_cam_vo = prev_odom_T[:3, :3] @ R_vo
+                            self.vo_update_cb(p_cam_vo, R_cam_vo, n_vo)
 
                 elif prev_cam is None:
                     # First frame: world coordinate system = camera frame 0.
                     T_cum = np.eye(4)
                 else:
-                    aligned   = False
-                    n_inliers = 0
+                    aligned      = False
+                    n_inliers    = 0
+                    vo_succeeded = False
 
                     # Primary: ORB + PnP ──────────────────────────────────────
                     R_rel, t_rel, n_inliers = vo_align(
@@ -405,7 +426,8 @@ class NavmeshThread(threading.Thread):
                             T_cum         = T_cum @ T_rel
                             print(f"[VO]  inliers={n_inliers:3d}  "
                                   f"shift={shift:.3f}m  rot={angle:.1f}°")
-                            aligned = True
+                            aligned      = True
+                            vo_succeeded = True
                         else:
                             print(f"[VO]  inliers={n_inliers} but "
                                   f"shift={shift:.3f}m rot={angle:.1f}° "
@@ -452,6 +474,14 @@ class NavmeshThread(threading.Thread):
                     T_cum = planar_lock(T_cum)
 
                 last_pose_T = T_cum.copy()   # for odom duplicate-view skip
+
+                # In pure-VO mode: feed the locked camera world pose into the
+                # EKF so vision corrects wheel-odometry drift each frame.
+                if (self.vo_update_cb is not None
+                        and odom_T is None
+                        and vo_succeeded):
+                    self.vo_update_cb(
+                        T_cum[:3, 3].copy(), T_cum[:3, :3].copy(), n_inliers)
 
                 # Record camera position for the trajectory trail
                 trajectory.append(T_cum[:3, 3].copy())
@@ -509,6 +539,8 @@ class NavmeshThread(threading.Thread):
                         ))
 
                 # Save state for next frame's alignment
+                if odom_T is not None:
+                    prev_odom_T = T_cum.copy()
                 prev_cam   = new_cam
                 prev_img   = new_img
                 prev_depth = new_depth

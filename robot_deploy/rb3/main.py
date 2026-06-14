@@ -92,37 +92,153 @@ def make_odom_source(ekf: "EKF2D"):
     return _source
 
 
+def make_vo_update_cb(ekf: "EKF2D"):
+    """Return a callback that corrects EKF drift using a VO-derived camera pose.
+
+    NavmeshThread calls this whenever visual odometry succeeds, passing the
+    estimated camera world position and rotation.  Here we:
+      1. Extract robot yaw from the camera rotation (camera looks along −Z,
+         and is rotated −90° about +Y relative to robot body).
+      2. Subtract the mount-offset lever arm to get robot body position.
+      3. Run an EKF measurement update to pull the dead-reckoning estimate
+         toward what vision actually observed.
+
+    Args (of the returned callable):
+        p_cam (np.ndarray): (3,) camera world position in nav coords.
+        R_cam (np.ndarray): (3,3) camera world rotation in nav coords.
+        n_inliers (int): PnP inlier count — more → tighter noise covariance.
+    """
+    mf = rb3_cfg.CAM_MOUNT_FWD
+    ml = rb3_cfg.CAM_MOUNT_LEFT
+
+    def _cb(p_cam: np.ndarray, R_cam: np.ndarray, n_inliers: int) -> None:
+        # Camera −Z in world = robot forward direction (nav convention).
+        fwd = R_cam @ np.array([0.0, 0.0, -1.0])
+        fwd[1] = 0.0                     # project onto the ground plane
+        n = float(np.linalg.norm(fwd))
+        if n < 1e-6:
+            return
+        fwd /= n
+        # R_y(phi) @ [0,0,-1] = [-sin(phi), 0, -cos(phi)]  →  phi = atan2(-fx, -fz)
+        phi  = float(np.arctan2(-fwd[0], -fwd[2]))   # camera yaw in nav
+        eyaw = phi + math.pi / 2.0                    # robot yaw
+
+        # Robot body position = camera position − lever arm (XZ components only;
+        # height is irrelevant for the 2D EKF state).
+        cf, sf = math.cos(eyaw), math.sin(eyaw)
+        fwd_w  = np.array([cf, 0.0, -sf])
+        left_w = np.array([-sf, 0.0, -cf])
+        p_robot = p_cam - mf * fwd_w - ml * left_w
+
+        # Measurement noise: scales inversely with sqrt of inlier count so
+        # frames with many matches get more weight in the update.
+        scale    = math.sqrt(max(cfg.VO_MIN_INLIERS, 1) / max(n_inliers, 1))
+        sig_xy   = 0.08 * scale    # metres  (8 cm at 20 inliers)
+        sig_yaw  = 0.05 * scale    # radians (3° at 20 inliers)
+        R_noise  = np.diag([sig_xy**2, sig_xy**2, sig_yaw**2])
+
+        ekf.update(float(p_robot[0]), float(p_robot[2]), eyaw, R_noise)
+        print(f"[EKF/VO] inliers={n_inliers}  "
+              f"x={p_robot[0]:+.3f}  z={p_robot[2]:+.3f}  "
+              f"yaw={math.degrees(eyaw):+.1f}°")
+
+    return _cb
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 #  EKF
 # ─────────────────────────────────────────────────────────────────────────────
 
 class EKF2D:
+    """Extended Kalman Filter for 2D ground-robot localisation.
+
+    State:  mu = [x, z, yaw]
+              x, z  — position in nav X-Z plane (metres)
+              yaw   — heading about nav +Y (radians)
+
+    Predict inputs (from HardwareBridge at 50 Hz):
+      • gyro_z   — IMU yaw rate (rad/s); replaces the noisy encoder differential.
+                   The gyro measures rotation directly and is unaffected by wheel
+                   slip or unequal tyre radii — the main source of dead-reckoning
+                   yaw error.  Falls back to encoder differential when gyro = 0
+                   (not yet started or see_workhorse unavailable).
+      • accel_fwd — forward acceleration (m/s²) is received but NOT integrated
+                   into the state.  Raw accelerometer output includes ≈9.81 m/s²
+                   of gravity whenever the forward axis is not perfectly level;
+                   integrating that bias causes position to fly away.  The data
+                   is available in get_odometry()["accel_fwd"] for diagnostics.
+                   Proper accel fusion requires subtracting a calibrated static
+                   bias measured while the robot is stationary.
+
+    Update inputs (from NavmeshThread on VO success):
+      • (x_meas, z_meas, yaw_meas) — VO-derived robot world pose; H = I.
+    """
+
     def __init__(self):
+        self._lock = threading.Lock()
         self.mu = np.zeros(3, np.float64)
         self.P  = np.diag([1e-4, 1e-4, 1e-4])
-        self.Q  = np.diag([4e-5, 4e-5, 2e-6])
+        # Q[2,2] (yaw) is smaller than before because the gyro is far more
+        # accurate than the encoder differential for rotation.
+        self.Q  = np.diag([4e-5, 4e-5, 1e-6])
 
-    def predict(self, v_l: float, v_r: float, dt: float):
-        wb = rb3_cfg.WHEEL_BASE_M
-        v  = (v_r + v_l) / 2.0
-        w  = (v_r - v_l) / wb
-        
-        x, z, y = self.mu
-        ny = y + w * dt
-        self.mu = np.array([x + v*np.cos(ny)*dt,
-                             z - v*np.sin(ny)*dt, ny])
-        F = np.array([[1,0,-v*np.sin(ny)*dt],
-                      [0,1,-v*np.cos(ny)*dt],
-                      [0,0,1]])
-        self.P = F @ self.P @ F.T + self.Q
+    def predict(self, v_l: float, v_r: float, dt: float,
+                gyro_z: float = 0.0, accel_fwd: float = 0.0) -> None:
+        with self._lock:
+            v     = (v_r + v_l) / 2.0
+            w_enc = (v_r - v_l) / rb3_cfg.WHEEL_BASE_M
+
+            # Use gyro yaw rate when available; clamp to the robot's physical
+            # maximum to catch unit errors (e.g. deg/s read as rad/s).
+            if abs(gyro_z) > 1e-9:
+                w_gyro = gyro_z * rb3_cfg.GYRO_SCALE * rb3_cfg.GYRO_YAW_SIGN
+                w = float(np.clip(w_gyro, -rb3_cfg.MAX_GYRO_RATE,
+                                           rb3_cfg.MAX_GYRO_RATE))
+            else:
+                w = w_enc   # gyro not yet reading; fall back to encoders
+
+            x, z, yaw = self.mu
+            ny = yaw + w * dt
+            self.mu = np.array([x + v * math.cos(ny) * dt,
+                                 z - v * math.sin(ny) * dt,
+                                 ny])
+            F = np.array([[1., 0., -v * math.sin(ny) * dt],
+                          [0., 1., -v * math.cos(ny) * dt],
+                          [0., 0.,  1.]])
+            self.P = F @ self.P @ F.T + self.Q
+
+    def update(self, x_meas: float, z_meas: float, yaw_meas: float,
+               R_noise: np.ndarray) -> None:
+        """EKF measurement update with a VO-derived pose observation (x, z, yaw).
+
+        H = I — direct state observation.  Includes a Mahalanobis gate to
+        reject VO estimates that are implausibly far from the EKF prediction.
+        """
+        with self._lock:
+            z_obs = np.array([x_meas, z_meas, yaw_meas])
+            inn   = z_obs - self.mu
+            inn[2] = (inn[2] + math.pi) % (2 * math.pi) - math.pi
+            S = self.P + R_noise   # H = I, so H P Hᵀ = P
+            try:
+                mahal_sq = float(inn @ np.linalg.solve(S, inn))
+                if mahal_sq > 11.3:   # chi²(3) 99% gate — reject outliers
+                    return
+                K = self.P @ np.linalg.inv(S)
+            except np.linalg.LinAlgError:
+                return
+            self.mu = self.mu + K @ inn
+            self.mu[2] = (self.mu[2] + math.pi) % (2 * math.pi) - math.pi
+            self.P = (np.eye(3) - K) @ self.P
 
     def reset(self):
-        self.mu = np.zeros(3, np.float64)
-        self.P  = np.diag([1e-4, 1e-4, 1e-4])
+        with self._lock:
+            self.mu = np.zeros(3, np.float64)
+            self.P  = np.diag([1e-4, 1e-4, 1e-4])
 
     @property
     def pose(self):
-        return float(self.mu[0]), float(self.mu[1]), float(self.mu[2])
+        with self._lock:
+            return float(self.mu[0]), float(self.mu[1]), float(self.mu[2])
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -250,13 +366,13 @@ class Controller:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def run_robot(model, device, source, port, controller: Controller | None,
-              state: RobotState, odom_source=None):
+              state: RobotState, odom_source=None, vo_update_cb=None):
 
     threads = [
         CaptureThread(source, cfg.CAPTURE_INTERVAL_S, cfg.FRAME_SKIP,
                       odom_source=odom_source),
         InferenceThread(model, device),
-        NavmeshThread(up_idx=1),
+        NavmeshThread(up_idx=1, vo_update_cb=vo_update_cb),
     ]
     for t in threads:
         t.start()
@@ -502,10 +618,13 @@ def main():
     hw    = HardwareBridge(port=args.pico_port,
                            wheel_radius=rb3_cfg.WHEEL_RADIUS_M,
                            wheel_base=rb3_cfg.WHEEL_BASE_M,
-                           new_data_callback=ekf.predict)
+                           new_data_callback=ekf.predict,
+                           accel_fwd_idx=rb3_cfg.ACCEL_FWD_IDX,
+                           accel_fwd_sign=rb3_cfg.ACCEL_FWD_SIGN)
     state = RobotState()
     ctrl  = None
-    odom_source = None
+    odom_source  = None
+    vo_update_cb = None
 
     if not args.no_nav:
         if hw.connect():
@@ -520,6 +639,12 @@ def main():
                 print("[Main] Map stitching: WHEEL ODOMETRY via EKF (level-1 fusion)")
             else:
                 print("[Main] Map stitching: VISUAL ODOMETRY")
+
+            # EKF drift correction: VO measures actual camera motion and
+            # corrects the wheel-odometry dead-reckoning via an EKF update
+            # step, whether odom or VO is driving the map.
+            vo_update_cb = make_vo_update_cb(ekf)
+            print("[Main] EKF VO correction: ENABLED")
         else:
             print("[Main] Pico not found — mapping only")
     else:
@@ -531,7 +656,7 @@ def main():
     try:
         run_robot(model=model, device=device, source=str(args.camera),
                   port=args.port, controller=ctrl, state=state,
-                  odom_source=odom_source)
+                  odom_source=odom_source, vo_update_cb=vo_update_cb)
     except KeyboardInterrupt:
         stop_event.set()
         hw.disconnect()
