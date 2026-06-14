@@ -81,6 +81,14 @@ MAP_MAX_DEPTH_M = 2.0        # display cloud: keep only nearby, reliable geometr
 NAV_MAX_DEPTH_M = 4.0        # navmesh cloud: a bit further for look-ahead, but
                              # still capped to drop far obstacle/floor noise
 
+# ── TSDF volumetric fusion ────────────────────────────────────────────────────
+# Average overlapping depth observations into a voxel volume (noise cancels)
+# instead of accumulating raw points.  Needs Open3D on the RB3
+# (`pip install open3d`); if it's missing the pipeline falls back automatically.
+USE_TSDF     = True
+TSDF_VOXEL_M = 0.03          # voxel size (m) — smaller = finer + slower/more RAM
+TSDF_TRUNC_M = 0.12          # signed-distance truncation (~4 voxels)
+
 # ── Viser viewer ─────────────────────────────────────────────────────────────
 PORT = 8080                  # open http://<rb3-ip>:8080 on any browser on the LAN
 

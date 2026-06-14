@@ -475,6 +475,11 @@ def main():
     cfg.FOV_H_DEG       = rb3_cfg.FOV_H_DEG   # RB3 wide-angle camera (see rb3 config)
     cfg.ACCUM_ENABLED   = True
 
+    # TSDF volumetric fusion (falls back to point accumulation if Open3D missing).
+    cfg.USE_TSDF     = rb3_cfg.USE_TSDF
+    cfg.TSDF_VOXEL_M = rb3_cfg.TSDF_VOXEL_M
+    cfg.TSDF_TRUNC_M = rb3_cfg.TSDF_TRUNC_M
+
     # Fisheye undistortion for the RB3's wide-angle lens.
     cfg.FISHEYE              = rb3_cfg.FISHEYE
     cfg.FISHEYE_FOCAL_MM     = rb3_cfg.FISHEYE_FOCAL_MM

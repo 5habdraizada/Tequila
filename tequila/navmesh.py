@@ -133,7 +133,8 @@ def _ransac_fallback(pts: np.ndarray,
 
 
 def extract_gpp(pts: np.ndarray,
-                up_idx: int) -> tuple[np.ndarray, np.ndarray, float]:
+                up_idx: int,
+                max_centroid_up: float = np.inf) -> tuple[np.ndarray, np.ndarray, float]:
     """Ground Principal Plane (GPP) extraction via partitioned sector fitting.
 
     Based on GCSLAM-B (2024):
@@ -145,13 +146,18 @@ def extract_gpp(pts: np.ndarray,
       Step 4 — Refine with least-squares on all inliers.
 
     Args:
-        pts:    (N, 3) float  point cloud in nav coords.
-        up_idx: index of the up axis (0=X, 1=Y, 2=Z).
+        pts:             (N, 3) float  point cloud in nav coords.
+        up_idx:          index of the up axis (0=X, 1=Y, 2=Z).
+        max_centroid_up: only consider points below this up-axis value.  Passing
+                         the camera height restricts the fit to below the camera
+                         so the ceiling (the other large flat surface indoors) is
+                         never picked as the floor — otherwise GPP locks onto the
+                         ceiling and the caller has to fall back to RANSAC.
 
     Returns:
         (plane, inlier_indices, lambda_min):
           plane      — [nx, ny, nz, d]  unit-normal plane equation.
-          inliers    — indices into pts.
+          inliers    — indices into the ORIGINAL pts.
           lambda_min — min PCA eigenvalue / N (flatness score; lower = flatter).
 
     Raises:
@@ -159,6 +165,17 @@ def extract_gpp(pts: np.ndarray,
     """
     up         = up_vector(up_idx)
     cos_thresh = np.cos(np.radians(cfg.MAX_FLOOR_TILT_DEG))
+
+    # Restrict the fit to points below the camera so the ceiling / high flat
+    # surfaces can't be mistaken for the floor.  `below` maps subset → original.
+    below = None
+    if np.isfinite(max_centroid_up):
+        below = np.where(pts[:, up_idx] < max_centroid_up)[0]
+        if len(below) < cfg.MIN_FLOOR_POINTS:
+            raise RuntimeError(
+                f"GPP: only {len(below)} pts below the camera "
+                f"(need {cfg.MIN_FLOOR_POINTS}).")
+        pts = pts[below]   # rebind to the below-camera subset for the whole fit
 
     # Horizontal axes for sector angle calculation (the two non-up axes)
     h_axes = [i for i in range(3) if i != up_idx]
@@ -236,6 +253,9 @@ def extract_gpp(pts: np.ndarray,
         raise RuntimeError(
             f"GPP refined: {len(inliers)} inliers (need {cfg.MIN_FLOOR_POINTS}).")
 
+    # Map subset indices back to the original point array for the caller.
+    if below is not None:
+        inliers = below[inliers]
     return np.array([*normal, d]), inliers, lambda_min
 
 
@@ -475,8 +495,11 @@ def compute_navmesh(pts: np.ndarray,
         return float(pts[f_idx, up_idx].mean()) < max_floor_up
 
     # Floor detection: try GPP first, fall back to RANSAC.
+    # Constrain GPP to below-camera points so it finds the floor directly instead
+    # of locking onto the ceiling and thrashing into the RANSAC fallback.
     try:
-        plane, floor_idx, lambda_min = extract_gpp(pts, up_idx)
+        plane, floor_idx, lambda_min = extract_gpp(
+            pts, up_idx, max_centroid_up=max_floor_up)
         quality = ("flat ✓"  if lambda_min < 0.001 else
                    "rough ~" if lambda_min < 0.005 else "poor ✗")
         print(f"[GPP]   λ_min={lambda_min:.6f}  ({quality})")
