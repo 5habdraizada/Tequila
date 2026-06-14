@@ -255,6 +255,7 @@ class RobotState:
         self.ekf_x    = 0.0
         self.ekf_z    = 0.0
         self.ekf_yaw  = 0.0
+        self.gyro_z   = 0.0   # raw IMU yaw rate (rad/s, before GYRO_SCALE/sign)
         self.tick_l   = 0
         self.tick_r   = 0
         self.connected = False
@@ -319,6 +320,7 @@ class Controller:
                 ekf_x    = rx,
                 ekf_z    = rz,
                 ekf_yaw  = math.degrees(ryaw),
+                gyro_z   = od["gyro_z"],
                 connected = self.hw.connected,
             )
 
@@ -481,6 +483,8 @@ def run_robot(model, device, source, port, controller: Controller | None,
         client.camera.up       = (0.0, 1.0, 0.0)
 
     diag_tick = 0
+    stat_yaw0: float | None = None   # EKF yaw when the robot last went still
+    stat_t0   = 0.0                  # time it went still (for drift-rate calc)
 
     # ── main loop ─────────────────────────────────────────────────────────────
 
@@ -548,6 +552,27 @@ def run_robot(model, device, source, port, controller: Controller | None,
             s = state.snapshot()
             conn  = "🟢 Connected" if s["connected"] else "🔴 Disconnected"
             mode  = "🕹 Manual" if (controller and controller.manual) else "🤖 Auto"
+
+            # Stationary yaw-drift tracker — exposes gyro bias.  While the robot
+            # is still, EKF yaw should hold; any creep is the gyro reading a
+            # non-zero rate at rest.  Verify gyro units off `gyro_z` (a ~90 °/s
+            # spin should read ~1.57 rad/s) and sign (left turn → yaw increases).
+            gz    = s["gyro_z"]
+            still = (abs(s["v_l"]) < 0.01 and abs(s["v_r"]) < 0.01
+                     and abs(s["v_lin"]) < 0.005 and abs(s["v_ang"]) < 0.02)
+            now_t = time.time()
+            if not still:
+                stat_yaw0 = None
+                drift_str = "— (moving)"
+            elif stat_yaw0 is None:
+                stat_yaw0 = s["ekf_yaw"]
+                stat_t0   = now_t
+                drift_str = "settling…"
+            else:
+                elapsed = max(1e-3, now_t - stat_t0)
+                d_yaw   = (s["ekf_yaw"] - stat_yaw0 + 180) % 360 - 180
+                drift_str = f"{d_yaw / elapsed:+.2f} °/s  ({elapsed:.0f}s still)"
+
             g_diag.content = (
                 f"**Pico:** {conn}  \n"
                 f"**Mode:** {mode}  \n\n"
@@ -555,6 +580,8 @@ def run_robot(model, device, source, port, controller: Controller | None,
                 f"| EKF x | `{s['ekf_x']:+.3f} m` |\n"
                 f"| EKF z | `{s['ekf_z']:+.3f} m` |\n"
                 f"| EKF yaw | `{s['ekf_yaw']:+.1f} °` |\n"
+                f"| gyro_z (raw) | `{gz:+.4f} rad/s` · `{math.degrees(gz):+.1f} °/s` |\n"
+                f"| yaw drift (still) | `{drift_str}` |\n"
                 f"| v_left | `{s['v_l']:+.3f} m/s` |\n"
                 f"| v_right | `{s['v_r']:+.3f} m/s` |\n"
                 f"| cmd v_lin | `{s['v_lin']:+.3f} m/s` |\n"
