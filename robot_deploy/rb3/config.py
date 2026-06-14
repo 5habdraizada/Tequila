@@ -9,8 +9,8 @@ All values here are merged on top of tequila/config.py at startup.
 PICO_PORT = None   # None = auto-detect by USB vendor ID (2E8A = Raspberry Pi)
 
 # ── Robot geometry (must match pi/config.py) ──────────────────────────────────
-WHEEL_RADIUS_M = 0.0325   # metres  0.0325
-WHEEL_BASE_M   = 0.190    # metres
+WHEEL_RADIUS_M = 0.033   # metres  0.0325
+WHEEL_BASE_M   = 0.172    # metres
 
 # ── Odometry-driven map stitching (level-1 fusion) ────────────────────────────
 # When True, each camera frame is placed in the map using the robot's measured
