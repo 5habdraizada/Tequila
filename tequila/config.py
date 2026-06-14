@@ -135,6 +135,14 @@ EDGE_CHECK_STEPS  = 20     # line-of-sight samples per edge (more → fewer clip
 # Assumes the camera is mounted ~level (forward-facing); if it is tilted down,
 # the lock axis would need to come from the detected floor normal instead.
 PLANAR_LOCK       = True
+
+# Volumetric TSDF fusion — integrate depth into a voxel volume that averages
+# overlapping observations (noise cancels) instead of piling up raw points.
+# Requires Open3D; if it is missing the pipeline falls back to point accumulation.
+USE_TSDF          = False
+TSDF_VOXEL_M      = 0.03   # TSDF voxel size (metres) — smaller = finer + slower
+TSDF_TRUNC_M      = 0.12   # signed-distance truncation (≈4 voxels)
+
 NAV_ACCUM_VOXEL   = VOXEL_SIZE * 3  # dedup voxel for accumulated cloud
 NAV_ACCUM_MAX_PTS = 500_000         # hard cap to prevent unbounded memory growth
 ACCUM_ENABLED     = True            # False = single-frame mode (product/turntable)

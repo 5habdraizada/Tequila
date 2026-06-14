@@ -27,6 +27,7 @@ import cv2
 import numpy as np
 
 import tequila.config as cfg
+import tequila.tsdf as tsdf_mod
 from tequila.depth    import frame_to_result
 from tequila.navmesh  import compute_navmesh
 from tequila.odometry import icp_align, vo_align
@@ -287,6 +288,21 @@ class NavmeshThread(threading.Thread):
         odom_T0           = None   # first odometry pose (world origin anchor)
         last_pose_T       = None   # last accumulated pose (odom duplicate skip)
 
+        # Optional TSDF volumetric fusion (averages overlapping views instead of
+        # piling up raw points).  Falls back to point accumulation if Open3D is
+        # missing.
+        tsdf              = None
+        frames_integrated = 0
+        use_tsdf          = bool(getattr(cfg, "USE_TSDF", False))
+        if use_tsdf and not tsdf_mod.available():
+            print("[Navmesh] USE_TSDF set but Open3D is not installed — "
+                  "using point accumulation")
+            use_tsdf = False
+        if use_tsdf:
+            tsdf = tsdf_mod.TSDFFusion(cfg.TSDF_VOXEL_M, cfg.TSDF_TRUNC_M,
+                                       cfg.MAP_MAX_DEPTH_M)
+            print("[Navmesh] Map fusion: TSDF volumetric")
+
         while not stop_event.is_set():
             # Map reset (e.g. after changing camera FOV) — drop all accumulated
             # geometry and start fresh so old, wrongly-projected points don't
@@ -300,6 +316,9 @@ class NavmeshThread(threading.Thread):
                 prev_focal = prev_cx = prev_cy = None
                 odom_T0 = last_pose_T = None
                 last_run = 0.0
+                if tsdf is not None:
+                    tsdf.reset()
+                    frames_integrated = 0
                 print("[Navmesh] Map reset — accumulation cleared")
 
             got_new = False
@@ -425,46 +444,60 @@ class NavmeshThread(threading.Thread):
 
                 last_pose_T = T_cum.copy()   # for odom duplicate-view skip
 
-                R_w = T_cum[:3, :3]
-                t_w = T_cum[:3,  3]
-
                 # Record camera position for the trajectory trail
                 trajectory.append(T_cum[:3, 3].copy())
 
-                # ── Coarse nav accumulation (navmesh RANSAC) ──────────────────
-                world_nav = (R_w @ new_cam.T).T + t_w
-                if not cfg.ACCUM_ENABLED:
-                    accum_pts = world_nav
-                elif accum_pts is None:
-                    accum_pts = world_nav
+                if use_tsdf:
+                    # Volumetric fusion: integrate this RGBD frame.  The fused
+                    # cloud is extracted later at the navmesh cadence (extracting
+                    # every frame would be too slow).
+                    tsdf.integrate(new_depth, new_img, focal, cx, cy, T_cum)
+                    frames_integrated += 1
                 else:
-                    accum_pts = np.concatenate([accum_pts, world_nav], axis=0)
-                    accum_pts = voxel_downsample_pts(accum_pts, cfg.NAV_ACCUM_VOXEL)
-                    if len(accum_pts) > 5000:
-                        accum_pts = sor_pts(accum_pts, nb=10, std_ratio=2.0)
-                    if len(accum_pts) > cfg.NAV_ACCUM_MAX_PTS:
-                        accum_pts = accum_pts[-cfg.NAV_ACCUM_MAX_PTS // 2:]
+                    R_w = T_cum[:3, :3]
+                    t_w = T_cum[:3,  3]
 
-                # ── Fine coloured accumulation (display map) ──────────────────
-                world_map = (R_w @ new_map_pts.T).T + t_w
-                if len(world_map) == 0:
-                    pass   # nothing to add (all points beyond MAP_MAX_DEPTH_M)
-                elif not cfg.ACCUM_ENABLED:
-                    accum_pts_fine = world_map
-                    accum_colors   = new_map_colors
-                elif accum_colors is None:
-                    accum_pts_fine = world_map
-                    accum_colors   = new_map_colors
-                else:
-                    accum_pts_fine = np.concatenate(
-                        [accum_pts_fine, world_map], axis=0)
-                    accum_colors   = np.concatenate(
-                        [accum_colors, new_map_colors], axis=0)
-                    accum_pts_fine, accum_colors = voxel_downsample_colored(
-                        accum_pts_fine, accum_colors, cfg.VOXEL_SIZE)
-                    if len(accum_pts_fine) > cfg.NAV_ACCUM_MAX_PTS:
-                        accum_pts_fine = accum_pts_fine[-cfg.NAV_ACCUM_MAX_PTS // 2:]
-                        accum_colors   = accum_colors  [-cfg.NAV_ACCUM_MAX_PTS // 2:]
+                    # ── Coarse nav accumulation (navmesh RANSAC) ──────────────
+                    world_nav = (R_w @ new_cam.T).T + t_w
+                    if not cfg.ACCUM_ENABLED:
+                        accum_pts = world_nav
+                    elif accum_pts is None:
+                        accum_pts = world_nav
+                    else:
+                        accum_pts = np.concatenate([accum_pts, world_nav], axis=0)
+                        accum_pts = voxel_downsample_pts(accum_pts, cfg.NAV_ACCUM_VOXEL)
+                        if len(accum_pts) > 5000:
+                            accum_pts = sor_pts(accum_pts, nb=10, std_ratio=2.0)
+                        if len(accum_pts) > cfg.NAV_ACCUM_MAX_PTS:
+                            accum_pts = accum_pts[-cfg.NAV_ACCUM_MAX_PTS // 2:]
+
+                    # ── Fine coloured accumulation (display map) ──────────────
+                    world_map = (R_w @ new_map_pts.T).T + t_w
+                    if len(world_map) == 0:
+                        pass   # nothing to add (all points beyond MAP_MAX_DEPTH_M)
+                    elif not cfg.ACCUM_ENABLED:
+                        accum_pts_fine = world_map
+                        accum_colors   = new_map_colors
+                    elif accum_colors is None:
+                        accum_pts_fine = world_map
+                        accum_colors   = new_map_colors
+                    else:
+                        accum_pts_fine = np.concatenate(
+                            [accum_pts_fine, world_map], axis=0)
+                        accum_colors   = np.concatenate(
+                            [accum_colors, new_map_colors], axis=0)
+                        accum_pts_fine, accum_colors = voxel_downsample_colored(
+                            accum_pts_fine, accum_colors, cfg.VOXEL_SIZE)
+                        if len(accum_pts_fine) > cfg.NAV_ACCUM_MAX_PTS:
+                            accum_pts_fine = accum_pts_fine[-cfg.NAV_ACCUM_MAX_PTS // 2:]
+                            accum_colors   = accum_colors  [-cfg.NAV_ACCUM_MAX_PTS // 2:]
+
+                    # Push the latest coloured map to the viewer
+                    if accum_pts_fine is not None:
+                        _push(map_queue, dict(
+                            pts    = accum_pts_fine.astype(np.float32),
+                            colors = accum_colors.astype(np.float32),
+                        ))
 
                 # Save state for next frame's alignment
                 prev_cam   = new_cam
@@ -474,16 +507,13 @@ class NavmeshThread(threading.Thread):
                 prev_cx    = cx
                 prev_cy    = cy
 
-                # Push the latest coloured map to the viewer
-                if accum_pts_fine is not None:
-                    _push(map_queue, dict(
-                        pts    = accum_pts_fine.astype(np.float32),
-                        colors = accum_colors.astype(np.float32),
-                    ))
-
                 got_new = True
 
-            if accum_pts is None:
+            if use_tsdf:
+                if frames_integrated == 0:
+                    time.sleep(0.3)
+                    continue
+            elif accum_pts is None:
                 time.sleep(0.5)
                 continue
             if not got_new:
@@ -494,6 +524,16 @@ class NavmeshThread(threading.Thread):
             if now - last_run < cfg.NAV_INTERVAL_S:
                 time.sleep(0.2)
                 continue
+
+            # ── TSDF: extract the fused cloud for display + navmesh ────────────
+            if use_tsdf:
+                ex_pts, ex_cols = tsdf.extract()
+                if len(ex_pts) < cfg.MIN_FLOOR_POINTS * 2:
+                    last_run = time.time()
+                    time.sleep(0.2)
+                    continue
+                _push(map_queue, dict(pts=ex_pts, colors=ex_cols))
+                accum_pts = voxel_downsample_pts(ex_pts, cfg.NAV_ACCUM_VOXEL)
 
             # ── Navmesh recompute ─────────────────────────────────────────────
             cam_world_pos = T_cum[:3, 3]
