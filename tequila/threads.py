@@ -487,6 +487,17 @@ class NavmeshThread(threading.Thread):
 
                 last_pose_T = T_cum.copy()   # for odom duplicate-view skip
 
+                # Diagnostic: the camera heading this frame is placed at, relative
+                # to frame 0.  Rotate the robot in place and watch this: if it
+                # tracks the turn the pose is fine; if it stays ~0 while the robot
+                # turns, the pose feeding the map is stale (sensor/EKF lag), which
+                # duplicates walls at the turn angle.
+                _fwd = T_cum[:3, :3] @ np.array([0.0, 0.0, -1.0])
+                print(f"[Map] placed frame  cam_yaw="
+                      f"{np.degrees(np.arctan2(-_fwd[0], -_fwd[2])):+6.1f}°  "
+                      f"pos=({T_cum[0, 3]:+.2f}, {T_cum[2, 3]:+.2f})  "
+                      f"src={'odom' if odom_T is not None else 'VO'}")
+
                 # In pure-VO mode: feed the locked camera world pose into the
                 # EKF so vision corrects wheel-odometry drift each frame.
                 if (self.vo_update_cb is not None
