@@ -29,7 +29,7 @@ import numpy as np
 import tequila.config as cfg
 import tequila.tsdf as tsdf_mod
 from tequila.depth    import frame_to_result
-from tequila.navmesh  import compute_navmesh
+from tequila.navmesh  import compute_navmesh, recompute_path
 from tequila.odometry import icp_align, vo_align
 from tequila.pointcloud import voxel_downsample_colored, voxel_downsample_pts, sor_pts
 
@@ -125,9 +125,28 @@ class CaptureThread(threading.Thread):
             cam_idx      = int(source)
             self.is_file = False
             # self.cap     = cv2.VideoCapture(cam_idx)
-            
-            gst_pipeline = "qtiqmmfsrc name=camsrc camera=0 ! video/x-raw,format=NV12,width=1280,height=720,framerate=30/1 ! videoconvert ! appsink"
-            
+
+            # During CAPTURE_INTERVAL_S seconds of sleep the camera produces
+            # many frames (90 at 30 fps for a 3 s interval).  Without
+            # max-buffers=1 the appsink queues ALL of them.  cap.read() then
+            # returns the OLDEST buffered frame — from when the sleep started —
+            # while odom_source() is sampled right NOW, causing an image/pose
+            # mismatch (stale image, current pose).
+            #
+            # appsink max-buffers=1 drop=true:
+            #   GStreamer "drop=true" drops OLD buffers when the 1-slot queue
+            #   is full, so only the latest camera frame is ever buffered.
+            #   cap.read() will block ≤ one camera frame period (~33 ms) until
+            #   the next frame arrives, then return immediately — perfectly
+            #   synchronised with the odom_source() call that follows.
+            # sync=false: don't stall on the presentation clock.
+            gst_pipeline = (
+                "qtiqmmfsrc name=camsrc camera=0 ! "
+                "video/x-raw,format=NV12,width=1280,height=720,framerate=30/1 ! "
+                "videoconvert ! "
+                "appsink max-buffers=1 drop=true sync=false"
+            )
+
             # Open the video stream using OpenCV and GStreamer
             self.cap = cv2.VideoCapture(gst_pipeline, cv2.CAP_GSTREAMER)
             
@@ -277,12 +296,17 @@ class NavmeshThread(threading.Thread):
     NAV_INTERVAL_S, recomputes, and pushes the result to navmesh_queue.
     """
 
-    def __init__(self, up_idx: int, vo_update_cb=None) -> None:
+    def __init__(self, up_idx: int, vo_update_cb=None, pose_source=None) -> None:
         super().__init__(daemon=True, name="NavmeshThread")
         self.up_idx = up_idx
         # Optional callback(p_cam, R_cam, n_inliers) — called whenever VO
         # produces a reliable camera world pose so the EKF can be corrected.
         self.vo_update_cb = vo_update_cb
+        # Optional callable () -> 4×4 camera world pose (nav coords).  When set,
+        # the navmesh worker queries this AFTER the slow compute pass to re-run
+        # just the A* path from the robot's current position, correcting for
+        # movement that occurred during the ~0.5–3 s navmesh computation.
+        self.pose_source = pose_source
         # Shared hand-off to the navmesh worker thread.
         self._nav_lock  = threading.Lock()
         self._nav_input = None      # (accum_pts, cam_pos, cam_fwd, trajectory)
@@ -290,6 +314,7 @@ class NavmeshThread(threading.Thread):
 
     def run(self) -> None:
         last_map_run: float = 0.0  # last TSDF map extract+push (display cadence)
+        placed_count      = 0      # accepted (placed) frames — for viewer display
         accum_pts         = None   # coarse world-space positions (navmesh RANSAC)
         accum_pts_fine    = None   # fine world-space positions   (display)
         accum_colors      = None   # colours matching accum_pts_fine
@@ -493,10 +518,12 @@ class NavmeshThread(threading.Thread):
                 # turns, the pose feeding the map is stale (sensor/EKF lag), which
                 # duplicates walls at the turn angle.
                 _fwd = T_cum[:3, :3] @ np.array([0.0, 0.0, -1.0])
-                print(f"[Map] placed frame  cam_yaw="
-                      f"{np.degrees(np.arctan2(-_fwd[0], -_fwd[2])):+6.1f}°  "
+                _cam_yaw_deg = float(np.degrees(np.arctan2(-_fwd[0], -_fwd[2])))
+                _frame_src   = "odom" if odom_T is not None else "VO"
+                placed_count += 1
+                print(f"[Map] placed frame #{placed_count}  cam_yaw={_cam_yaw_deg:+6.1f}°  "
                       f"pos=({T_cum[0, 3]:+.2f}, {T_cum[2, 3]:+.2f})  "
-                      f"src={'odom' if odom_T is not None else 'VO'}")
+                      f"src={_frame_src}")
 
                 # In pure-VO mode: feed the locked camera world pose into the
                 # EKF so vision corrects wheel-odometry drift each frame.
@@ -554,11 +581,16 @@ class NavmeshThread(threading.Thread):
                             accum_pts_fine = accum_pts_fine[-cfg.NAV_ACCUM_MAX_PTS // 2:]
                             accum_colors   = accum_colors  [-cfg.NAV_ACCUM_MAX_PTS // 2:]
 
-                    # Push the latest coloured map to the viewer
+                    # Push the latest coloured map to the viewer, bundling the
+                    # frame's historical pose so the viewer can display it.
                     if accum_pts_fine is not None:
                         _push(map_queue, dict(
-                            pts    = accum_pts_fine.astype(np.float32),
-                            colors = accum_colors.astype(np.float32),
+                            pts         = accum_pts_fine.astype(np.float32),
+                            colors      = accum_colors.astype(np.float32),
+                            frame_count = placed_count,
+                            cam_pos     = T_cum[:3, 3].copy().astype(np.float32),
+                            cam_yaw_deg = _cam_yaw_deg,
+                            src         = _frame_src,
                         ))
 
                 # Save state for next frame's alignment
@@ -655,8 +687,36 @@ class NavmeshThread(threading.Thread):
             last_run = time.time()
 
             if nav is not None:
-                current_goal      = nav.get("goal")   # commit goal across recomputes
-                nav["trajectory"] = traj
+                current_goal = nav.get("goal")   # commit goal across recomputes
+
+                # Path-latency correction: the robot may have moved significantly
+                # during the ~0.5–3 s compute_navmesh() call.  Re-run just the
+                # cheap A* step from the current measured pose so the published
+                # path starts where the robot actually is now, not where it was
+                # when computation began.
+                if self.pose_source is not None:
+                    try:
+                        T_cur = self.pose_source()
+                        if T_cur is not None:
+                            cur_pos = np.asarray(T_cur[:3, 3], dtype=np.float64)
+                            shift   = float(np.linalg.norm(cur_pos - cam_world_pos))
+                            if shift > 0.02:   # moved > 2 cm during compute
+                                new_path, new_goal = recompute_path(
+                                    nav["free_nodes"], nav["edges"],
+                                    cur_pos, current_goal)
+                                nav["path_pts"] = new_path
+                                if new_goal is not None:
+                                    nav["goal"]  = new_goal
+                                    current_goal = new_goal
+                                print(f"[Navmesh] Path corrected for {shift:.3f} m "
+                                      f"robot movement during compute")
+                    except Exception as exc:
+                        print(f"[Navmesh] pose_source error (path correction skipped): {exc}")
+
+                nav["trajectory"]    = traj
+                nav["frame_cam_pos"] = cam_world_pos.astype(np.float32)
+                nav["frame_cam_yaw"] = float(np.degrees(
+                    np.arctan2(-cam_world_fwd[0], -cam_world_fwd[2])))
                 _push(navmesh_queue, nav)
 
         print("[Navmesh] Worker stopped")

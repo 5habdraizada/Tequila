@@ -99,7 +99,7 @@ FISHEYE_CALIB_WH     = (1280, 720)   # capture_calibration.py grabs at 1280×720
 # ── Navigation ────────────────────────────────────────────────────────────────
 # Maximum linear and angular speed sent to the Pi
 MAX_V_LIN  = 0.1           # m/s  — conservative for first runs
-MAX_V_ANG  = 1.0           # rad/s
+MAX_V_ANG  = 0.8           # rad/s
 
 # Look-ahead distance for pure-pursuit path following
 LOOKAHEAD_M = 0.50          # metres ahead on the path to aim for

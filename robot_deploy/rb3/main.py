@@ -370,7 +370,8 @@ class Controller:
 def run_robot(model, device, source, port, controller: Controller | None,
               state: RobotState, odom_source=None, vo_update_cb=None):
 
-    nav_thread  = NavmeshThread(up_idx=1, vo_update_cb=vo_update_cb)
+    nav_thread  = NavmeshThread(up_idx=1, vo_update_cb=vo_update_cb,
+                                pose_source=odom_source)
     vo_cb_full  = vo_update_cb          # remember it so the toggle can restore it
     # Start with the config default: when VO correction is off the map stitches
     # from pure wheel+gyro odometry (no visual correction of the EKF).
@@ -418,6 +419,9 @@ def run_robot(model, device, source, port, controller: Controller | None,
 
     with server.gui.add_folder("📊 Diagnostics"):
         g_diag = server.gui.add_markdown("_Waiting for data…_")
+
+    with server.gui.add_folder("📷 Latest Frame"):
+        g_frame_info = server.gui.add_markdown("_Waiting for first frame…_")
 
     with server.gui.add_folder("🗺 Map"):
         g_reset_pose = server.gui.add_button("Reset EKF Pose")
@@ -501,7 +505,8 @@ def run_robot(model, device, source, port, controller: Controller | None,
         client.camera.look_at  = tuple(centroid.tolist())
         client.camera.up       = (0.0, 1.0, 0.0)
 
-    diag_tick = 0
+    diag_tick  = 0
+    last_frame: dict = {}            # latest placed-frame metadata from map_queue
     stat_yaw0: float | None = None   # EKF yaw when the robot last went still
     stat_t0   = 0.0                  # time it went still (for drift-rate calc)
 
@@ -511,9 +516,16 @@ def run_robot(model, device, source, port, controller: Controller | None,
 
         # Point cloud / splat map
         try:
-            m   = map_queue.get_nowait()
+            m      = map_queue.get_nowait()
             pts    = m["pts"]
             colors = m["colors"]
+            if "frame_count" in m:
+                last_frame = {
+                    "count":       m["frame_count"],
+                    "cam_pos":     m["cam_pos"],
+                    "cam_yaw_deg": m["cam_yaw_deg"],
+                    "src":         m["src"],
+                }
             n   = min(len(pts), len(colors))
             if n > 0:
                 pts    = np.ascontiguousarray(pts[:n])
@@ -549,6 +561,11 @@ def run_robot(model, device, source, port, controller: Controller | None,
             update_navmesh(server, nav)
             if controller:
                 controller.update_path(nav.get("path_pts", np.array([])))
+            # Annotate last_frame with the navmesh-computation snapshot so the
+            # viewer can show how stale the navmesh was when it finished.
+            if last_frame and "frame_cam_pos" in nav:
+                last_frame["navmesh_cam_pos"] = nav["frame_cam_pos"]
+                last_frame["navmesh_cam_yaw"] = nav["frame_cam_yaw"]
         except queue.Empty:
             pass
 
@@ -606,6 +623,34 @@ def run_robot(model, device, source, port, controller: Controller | None,
                 f"| cmd v_lin | `{s['v_lin']:+.3f} m/s` |\n"
                 f"| cmd v_ang | `{s['v_ang']:+.3f} rad/s` |\n"
             )
+
+            # Latest-frame info panel
+            if last_frame:
+                cp  = last_frame["cam_pos"]
+                src = last_frame["src"]
+                lines = (
+                    f"**Frame:** #{last_frame['count']}  &nbsp; **src:** {src}  \n\n"
+                    f"| | Value |\n|---|---|\n"
+                    f"| x (historical) | `{cp[0]:+.3f} m` |\n"
+                    f"| z (historical) | `{cp[2]:+.3f} m` |\n"
+                    f"| yaw (historical) | `{last_frame['cam_yaw_deg']:+.1f} °` |\n"
+                )
+                # If the navmesh worker's snapshot differs from the current frame
+                # pose, show the gap so it is easy to spot staleness.
+                ncp = last_frame.get("navmesh_cam_pos")
+                if ncp is not None:
+                    shift = math.hypot(float(ncp[0]) - float(cp[0]),
+                                       float(ncp[2]) - float(cp[2]))
+                    yaw_diff = abs(last_frame.get("navmesh_cam_yaw", last_frame["cam_yaw_deg"])
+                                   - last_frame["cam_yaw_deg"])
+                    lines += (
+                        f"| navmesh snap x | `{ncp[0]:+.3f} m` |\n"
+                        f"| navmesh snap z | `{ncp[2]:+.3f} m` |\n"
+                        f"| navmesh snap yaw | `{last_frame['navmesh_cam_yaw']:+.1f} °` |\n"
+                        f"| pose lag (XZ) | `{shift:.3f} m` |\n"
+                        f"| yaw lag | `{yaw_diff:.1f} °` |\n"
+                    )
+                g_frame_info.content = lines
 
         time.sleep(0.05)   # ~20 Hz
 

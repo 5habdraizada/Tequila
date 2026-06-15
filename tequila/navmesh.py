@@ -452,6 +452,55 @@ def astar_graph(free_nodes: np.ndarray,
 #  Top-level navmesh pipeline
 # ─────────────────────────────────────────────────────────────────────────────
 
+def recompute_path(
+        free_nodes: np.ndarray,
+        edges: list[tuple[int, int]],
+        camera_origin: np.ndarray,
+        prev_goal: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray | None]:
+    """Re-run only the A* path on an already-computed navmesh from a new camera origin.
+
+    The floor detection, node grid, and obstacle filtering are expensive (~0.5 s).
+    This function skips all of that and just re-finds the nearest start node and
+    replans the A* path — call it after compute_navmesh() returns to correct for
+    robot movement that occurred during the slow compute pass.
+
+    Returns:
+        (path_pts, chosen_goal) — path_pts is (K, 3) float32; chosen_goal is (3,) or None.
+    """
+    if len(free_nodes) < 2 or not edges:
+        return np.zeros((0, 3), dtype=np.float32), None
+
+    camera_origin = np.asarray(camera_origin, dtype=np.float64)
+    node_tree     = KDTree(free_nodes)
+    start_idx     = int(node_tree.query(camera_origin)[1])
+    path_pts      = np.zeros((0, 3), dtype=np.float32)
+    chosen_goal   = None
+
+    if prev_goal is not None:
+        reached = float(np.linalg.norm(camera_origin - prev_goal)) < cfg.NAV_GOAL_REACHED_M
+        if not reached:
+            goal_idx = int(node_tree.query(prev_goal)[1])
+            if goal_idx != start_idx:
+                path_idx = astar_graph(free_nodes, edges, start_idx, goal_idx)
+                if path_idx:
+                    path_pts    = free_nodes[path_idx].astype(np.float32)
+                    chosen_goal = free_nodes[goal_idx].astype(np.float32)
+
+    if chosen_goal is None:
+        dists = np.linalg.norm(free_nodes - camera_origin, axis=1)
+        for goal_idx in np.argsort(-dists):
+            if int(goal_idx) == start_idx:
+                continue
+            path_idx = astar_graph(free_nodes, edges, start_idx, int(goal_idx))
+            if path_idx:
+                path_pts    = free_nodes[path_idx].astype(np.float32)
+                chosen_goal = free_nodes[int(goal_idx)].astype(np.float32)
+                break
+
+    return path_pts, chosen_goal
+
+
 def compute_navmesh(pts: np.ndarray,
                     up_idx: int,
                     camera_origin: np.ndarray | None = None,
