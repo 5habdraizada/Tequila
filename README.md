@@ -1,20 +1,16 @@
 # TEQUILA
 
-TEQUILA is a live 3D mapping and navigation system we've been building for a Qualcomm RB3 Gen 2 robot. Point a camera at a room, and it turns the video into a coloured 3D point cloud, figures out where the floor and obstacles are, and plans a path to explore the space — all live, in a browser.
+TEQUILA is a live 3D mapping and navigation system for a Qualcomm RB3 Gen 2 robot. Point a camera at a room and it turns the video into a coloured 3D point cloud, works out where the floor and obstacles are, and plans a path to explore the space, all live in a browser.
 
-It started as a webcam-only software pipeline (still works standalone, no robot needed) and has since grown a real hardware leg: a Pi Pico reading wheel encoders and a gyro, an EKF fusing that with vision, and a control panel for driving the actual robot. Two of us work on this — one on the mapping/vision side (`tequila/`), one on the odometry/EKF/firmware side (`robot_deploy/`).
+It started as a webcam-only software pipeline (still works standalone, no robot needed) and has since grown a hardware leg: a Pi Pico reading wheel encoders and a gyro, an EKF fusing that with vision, and a control panel for driving the actual robot. Two of us work on this. One on the mapping/vision side (`tequila/`), one on the odometry/EKF/firmware side (`robot_deploy/`).
 
-It mostly works. It also still smears itself into a mess sometimes. More on that below.
-
----
+It mostly works. It also still smears itself into a mess sometimes, more on that below.
 
 ## What it does
 
-1. **Builds a 3D map** — every frame becomes a coloured point cloud that gets fused into a growing world-space map
-2. **Finds the floor and obstacles** — fits a ground plane, lays a grid of waypoints on it, and marks which ones are blocked
-3. **Plans where to go** — A* from the robot's current spot to the farthest reachable waypoint, so it keeps pushing into unexplored territory
+Every frame becomes a coloured point cloud that gets fused into a growing world map. The system fits a ground plane, lays a grid of waypoints across it, and marks which ones are blocked by obstacles. Then it runs A* from the robot's current position to the farthest reachable waypoint, so it keeps pushing outward into unexplored territory instead of just sitting there.
 
-All of it streams to a browser at `http://localhost:8080` (or `http://<rb3-ip>:8080` on the robot) via [viser](https://viser.studio) — nothing to install on the viewing device.
+All of it streams to a browser at `http://localhost:8080` (or `http://<rb3-ip>:8080` on the robot) through [viser](https://viser.studio). Nothing to install on the viewing device, just open the page.
 
 ```
 Camera / Video
@@ -33,97 +29,61 @@ Camera / Video
                          (http://localhost:8080)
 ```
 
-On the robot, a fourth source of truth enters the picture: wheel odometry + gyro, fused through an EKF, which can drive the map instead of (or alongside) vision. More on that in [Running it on the robot](#running-it-on-the-robot).
-
----
+On the robot there's a fourth source of truth in the mix too: wheel odometry and gyro, fused through an EKF, which can drive the map instead of vision or alongside it. More on that under [Running it on the robot](#running-it-on-the-robot).
 
 ## Where things stand
 
-**Working reasonably well:**
-- Metric depth (Depth Anything V2) — no per-frame scale drift, so accumulated frames actually line up
-- SIFT+PnP visual odometry with ICP as a fallback when a wall has no texture to track
-- Floor detection (GPP sector-plane fitting, RANSAC fallback) — handles tilted/noisy clouds and won't lock onto the ceiling
-- Frontier-exploration navmesh + A* — the robot reliably picks a far, reachable spot and paths to it, and now commits to that goal instead of re-picking a new one every recompute (it used to twitch back and forth constantly)
-- Navmesh recompute runs on its own thread now, so a slow (1-3 s) recompute no longer stalls the map display
-- Fisheye undistortion with a real measured camera calibration (not just a lens-spec approximation)
-- On the robot: wheel + gyro odometry through an EKF, with vision correcting its drift, and a live control panel (manual drive, motor test, gyro diagnostics, VO on/off toggle)
+Metric depth from Depth Anything V2 works well and doesn't drift in scale from frame to frame the way relative-depth models do. SIFT+PnP visual odometry handles most frames fine and falls back to ICP when a wall doesn't have enough texture to track. Floor detection (GPP sector fitting with a RANSAC fallback) copes with tilted or noisy clouds and won't lock onto the ceiling by mistake. The frontier-exploration navmesh reliably picks a far, reachable spot and paths to it, and it now commits to that goal instead of re-picking a new one every recompute, which used to make it twitch back and forth constantly. Navmesh recompute also runs on its own thread now, so a slow 1-3 second pass no longer stalls the map display.
 
-**Actively being worked on / half-working:**
-- TSDF volumetric fusion as an alternative to raw point accumulation — implemented, off by default, unclear yet if it's actually better than point accumulation + SOR for our use case
-- Gyro calibration on the real robot (sign, scale, bias) — still mostly manual, "spin it and check the printed sign" territory
+Fisheye undistortion uses a real measured camera calibration rather than just a lens-spec approximation. On the robot side there's wheel + gyro odometry through an EKF, vision correcting its drift, and a live control panel with manual drive, motor testing, and gyro diagnostics.
 
----
+Still in progress: TSDF volumetric fusion as an alternative to raw point accumulation is implemented and off by default, and it's not yet clear if it actually beats plain accumulation plus SOR for our case. Gyro calibration on the real robot (sign, scale, bias) is still mostly manual, spin it and check the printed sign in the console kind of territory.
 
 ## Current problems
 
-Being honest about the state of things:
+The map still fans out and duplicates itself. This is the big one. If yaw drifts even a couple degrees between frames, from wheel slip, from a VO frame that barely missed its inlier threshold, from gyro bias, every frame after that gets placed at a slightly wrong angle and the same wall ends up painted into the map several times at different angles. It looks like a wall exploded outward into a fan of ghost copies. We've attacked this from a few directions: planar-motion lock so pitch and roll can't drift, tighter VO acceptance thresholds, gyro fusion so yaw doesn't depend on wheel slip at all. It's better than it was but not solved. Leave the robot sitting still on a hard floor for a few minutes and you can watch the EKF pose slowly rotate on its own. That's raw gyro bias, and it turns straight into map smearing over time.
 
-**The map still fans out and duplicates itself.** This is the big one. If yaw drifts even a couple of degrees between frames — from wheel slip, from a VO frame that barely missed its inlier threshold, from gyro bias — every frame after that is placed at a slightly wrong angle, and the same wall gets painted into the map multiple times at different angles. It looks like a wall exploding outward into a fan of ghost copies. We've attacked this from a few angles (planar-motion lock so pitch/roll can't drift, tighter VO acceptance thresholds, gyro fusion so yaw doesn't depend on wheel slip at all) and it's better than it was, but it's not solved. A held-still robot on a hard floor for a few minutes will visibly rotate in the EKF display — that's raw gyro bias creeping in, and it directly becomes map smearing over time.
+Visual odometry still struggles on low-texture surfaces. Blank walls, dim rooms, glossy floors, SIFT just can't find enough keypoints and falls back to ICP, which is worse and more likely to get a bad fit when the geometry is ambiguous, like a long flat corridor.
 
-**Visual odometry still fails on low-texture surfaces.** Blank walls, dim rooms, glossy floors — SIFT just doesn't find enough keypoints, and it falls back to ICP, which is worse and more prone to a bad fit if the geometry is ambiguous (a long flat corridor, for instance).
+The odom/VO fusion right now is a coarse toggle rather than a properly tuned filter. You can drive the map from wheel+gyro odometry or from vision, and vision nudges the EKF when it succeeds, but the measurement noise fed into that update is a rough heuristic based on inlier count, not anything we've actually characterized.
 
-**The odom/VO fusion is a coarse toggle, not a real filter.** Right now you can either drive the map from wheel+gyro odometry, or from vision, and vision can nudge the EKF when it succeeds. It's not a tightly tuned sensor fusion — the measurement noise VO feeds into the EKF is a rough heuristic based on inlier count, not something we've actually characterized.
+`robot_deploy/rb3/install.sh` is out of date. It still references a separate Pi bridge process (`pi/bridge.py`, a `PI_IP` setting) from an earlier architecture. The current code talks to the Pico directly over USB serial, the install script just never got updated.
 
-**The RB3 install script is out of date.** `robot_deploy/rb3/install.sh` still references a separate Pi bridge process (`pi/bridge.py`, a `PI_IP` setting) from an earlier architecture. The current code talks to the Pico directly over USB serial — the install script just hasn't caught up.
+There's some dead weight sitting in the repo too. `depth_anything_v2/` (the vendored relative-depth model code) isn't imported by anything anymore since the pipeline moved to the metric model. `tequila/hardware.py` is the same story, a TCP client for an even older setup that predates talking to the Pico directly over serial (`robot_deploy/rb3/hardware.py` is the one actually used now).
 
-**There's dead weight in the repo.** `depth_anything_v2/` (the vendored relative-depth model code) isn't imported by anything in the current pipeline anymore — the whole thing runs on the metric Depth Anything V2 model now. `tequila/hardware.py` is in the same boat: it's a TCP client for an even older architecture (a separate Pi bridge process) that predates the RB3 talking to the Pico directly over USB serial (`robot_deploy/rb3/hardware.py` is the one actually in use). Both are just sitting there from earlier iterations.
+And recovering from a bad map is entirely manual. If it fans out, the fix today is hit Reset Map and drive around again.
 
-**Recovering from a bad map is manual.** If the map does fan out, the fix today is "hit Reset Map and drive around again," not anything automatic.
-
-If you look at the map in the viewer and it's a clean, recognizable room — that's the pipeline working as intended. If it looks like a wall got put through a blender, that's yaw drift, and it's the main thing left to fix.
-
----
+If the map in the viewer looks like a clean, recognizable room, that's the pipeline working as intended. If it looks like a wall got put through a blender, that's yaw drift, and it's the main thing left to fix.
 
 ## How it works
 
-### Step 1 — Depth inference (`tequila/depth.py`)
+**Depth inference (`tequila/depth.py`).** Each incoming frame gets resized to `--width` pixels and run through Depth Anything V2 in its metric configuration, so it outputs actual distances in metres rather than a 0-1 normalized map. That matters more than it sounds like it should: a relative-depth model rescales every frame independently, so the same real-world distance maps to a different pixel value from one frame to the next, and stitching frames together turns that into a stretching, fanning mess. Metric depth sidesteps the whole problem.
 
-Each incoming frame is resized to `--width` pixels and run through **Depth Anything V2**, a transformer depth model, in its *metric* configuration — it outputs actual distances in metres, not a 0-1 normalized map. That matters a lot: a relative-depth model rescales every frame independently, so the same real-world distance maps to a different pixel value from one frame to the next, and stitching frames together amplifies that into a stretching, fanning mess. Metric depth sidesteps that entirely.
+Depth models also blend intermediate values at object edges, a chair leg against a far wall for example, which back-project into long spikes trailing behind every object. We remove them with a two-stage test: a pixel is flagged if it's well past its local neighbourhood minimum (an erosion test) or sitting on a sharp relative depth gradient, then the bad-pixel mask gets dilated a couple pixels to catch the blended edge pixels around it too.
 
-**Flying-pixel removal:** depth models blend intermediate values at object edges (a chair leg against a far wall, say), which back-project into long spikes trailing behind every object. We remove them with a two-stage test — a pixel is flagged if it's either well past its local neighbourhood minimum (erosion test) or sitting on a sharp relative depth gradient — then dilate the bad-pixel mask a couple pixels to catch the blended edge pixels around it.
+If fisheye undistortion is on, we rectify the wide RB3 lens to a narrower rectilinear FOV before any of this, using either a measured calibration (`tools/camera_calibration.py`, chessboard-based) or, failing that, an equidistant-lens approximation from the spec sheet. Otherwise the pinhole back-projection math further down the pipeline would be wrong. Each frame ends up producing two point clouds: a coarse position-only one for floor detection and the navmesh, and a fine coloured one for what actually shows up in the viewer.
 
-**Fisheye undistortion** (when enabled): the RB3's lens is wide enough that the pinhole back-projection math would be wrong without correcting for it first. We rectify to a narrower rectilinear FOV using either a measured calibration (`tools/camera_calibration.py`, chessboard-based) or, if that's not available, an equidistant-lens approximation from the lens spec sheet.
+**Frame alignment (`tequila/odometry.py`).** To build a consistent map, every new frame has to land in the same coordinate system as everything before it. On the robot, if wheel+gyro fusion is on, the EKF's pose places the frame directly and vision isn't needed for that part. Visual odometry still runs alongside it, and whenever it finds a confident alignment it nudges the EKF back toward what the camera actually saw, correcting wheel-odometry drift as it goes.
 
-Each frame produces two point clouds: a coarse, position-only one (`nav_pts`) for floor detection and the navmesh, and a fine, coloured one (`map_pts`) for what you actually see in the viewer.
+In the default webcam/video mode, SIFT keypoints get matched between the current and previous frame with Lowe's ratio test to kill ambiguous matches, the matched previous-frame points are lifted to 3D using the stored depth map, and `solvePnPRansac` recovers the relative camera pose. A result needs at least 20 inliers, translation under 2 m, and rotation under 15° to be accepted, anything wilder gets thrown out. If that fails, usually not enough texture to match, it falls back to point-to-point ICP on the coarse clouds, needing at least 35% inlier fitness under the same shift and rotation limits.
 
-### Step 2 — Frame alignment (`tequila/odometry.py`)
+Either way, since the robot only drives on a flat floor, the pose gets projected back onto a pure X-Z translation plus yaw manifold after alignment. Pitch, roll, and vertical drift get zeroed out every single frame instead of being allowed to accumulate.
 
-To build a consistent map, every new frame has to be placed in the same coordinate system as everything before it. Two ways this happens:
+**Map accumulation (`tequila/threads.py`).** Aligned frames get transformed into world space and merged into two running clouds: a coarse one for floor and navmesh work that's periodically voxel-downsampled and SOR-cleaned, and a fine coloured one for display, capped at a configurable max depth so distant, noisier points don't stretch into long fan arms. Both clouds are hard-capped at 500,000 points. There's also an optional TSDF volumetric fusion mode that integrates depth into a voxel grid instead of piling up raw points, averaging overlapping observations rather than letting noise stack, but it's newer and less battle-tested than plain accumulation.
 
-**On the robot, if wheel+gyro fusion is on:** the EKF's pose (from `robot_deploy/rb3/main.py`) places the frame directly — no vision needed for this part. Visual odometry still runs in parallel and, when it finds a confident alignment, nudges the EKF back toward what the camera actually saw, correcting wheel-odometry drift.
+**Floor detection (`tequila/navmesh.py`).** Every `--nav-interval` seconds the accumulated cloud gets split into angular sectors around the vertical axis, a plane gets PCA-fit per sector, and the largest group of sectors whose normals roughly agree becomes the floor candidate. If GPP can't find enough agreement, or if the "floor" it found turns out to be above the camera (a table, or the ceiling, usually from drift), it falls back to classic RANSAC with the camera height as a hard ceiling on where a floor is allowed to be.
 
-**Otherwise (default, webcam/video mode):** SIFT keypoints are matched between the current and previous frame (Lowe's ratio test to kill ambiguous matches), the matched previous-frame points are lifted to 3D using the stored depth map, and `solvePnPRansac` recovers the relative camera pose. A result needs at least 20 inliers, translation under 2 m, and rotation under 15° to be accepted — anything wilder gets thrown out as noise. If that fails (not enough texture to match), it falls back to point-to-point ICP on the coarse clouds, requiring at least 35% inlier fitness under the same shift/rotation caps.
-
-Either way, the robot only drives on a flat floor, so after alignment the pose gets projected back onto a pure X-Z-translation-plus-yaw manifold (`planar_lock`) — pitch, roll, and vertical drift get zeroed out every frame instead of being allowed to accumulate.
-
-### Step 3 — Map accumulation (`tequila/threads.py`)
-
-Aligned frames get transformed into world space and merged into two running clouds: a coarse one for floor/navmesh work (voxel-downsampled, periodically SOR-cleaned), and a fine coloured one for display, capped to a configurable max depth so distant, noisier points don't stretch into long fan arms. Both are hard-capped at 500,000 points. There's also an optional TSDF volumetric fusion mode (`USE_TSDF`) that integrates depth into a voxel grid instead of piling up raw points — it averages overlapping observations instead of letting noise stack, but it's newer and less battle-tested than plain accumulation.
-
-### Step 4 — Floor detection (`tequila/navmesh.py`)
-
-Every `--nav-interval` seconds, the accumulated cloud gets split into angular sectors around the vertical axis, a plane is PCA-fit per sector, and the largest group of sectors whose normals roughly agree becomes the floor candidate. If GPP can't find enough agreement (or the "floor" it found turns out to be above the camera — a table or the ceiling, usually from drift), it falls back to classic RANSAC with the camera height as a hard ceiling on where a floor can be.
-
-### Step 5 — Navigation mesh + path planning (`tequila/navmesh.py`)
-
-A grid of waypoints gets laid directly onto the fitted floor plane (not snapped to noisy floor points, so every node sits at exactly the same height). Non-floor points in a height band above the floor become obstacles; any node within the clearance radius of one is blocked. Free nodes within range of each other get connected if a line-of-sight check along the edge stays clear. A* then runs from the node nearest the camera to the farthest node it can actually reach — a simple frontier-exploration strategy — and it now *commits* to that goal across recomputes instead of picking a fresh one every time, which used to make the path visibly twitch.
-
----
+**Navigation mesh and path planning.** A grid of waypoints gets laid directly onto the fitted floor plane rather than snapped to noisy floor points, so every node ends up at exactly the same height. Non-floor points in a height band above the floor become obstacles, and any node within the clearance radius of one gets blocked. Free nodes within range of each other are connected if a line-of-sight check along the edge stays clear. A* then runs from the node nearest the camera to the farthest one it can actually reach, a simple frontier-exploration strategy, and it commits to that goal across recomputes now instead of picking a fresh one every time.
 
 ## Running it on the robot
 
-`robot_deploy/` is the RB3 Gen 2 deployment, split from the core pipeline:
+`robot_deploy/` is the RB3 Gen 2 deployment, kept separate from the core pipeline. `robot_deploy/pico/` is MicroPython firmware for the Pi Pico: it reads quadrature encoders through hardware interrupts, drives the motors, and streams encoder ticks and IMU readings to the RB3 over USB serial as newline-delimited JSON. `robot_deploy/rb3/` runs on the RB3 itself — `hardware.py` is the serial client, and `main.py` wires up an EKF2D (wheel + gyro dead-reckoning with an optional vision correction step), a pure-pursuit controller that follows the live navmesh path, and a viser control panel with manual drive, individual motor testing, and live diagnostics like EKF pose, raw gyro rate, and a stationary yaw-drift readout for spotting gyro bias.
 
-- **`robot_deploy/pico/`** — MicroPython firmware for the Pi Pico. Reads quadrature encoders via hardware interrupts, drives the motors, and streams encoder ticks + IMU readings to the RB3 over USB serial as newline-delimited JSON.
-- **`robot_deploy/rb3/`** — runs on the RB3 itself. `hardware.py` is the serial client; `main.py` wires up an `EKF2D` (wheel + gyro dead-reckoning, with an optional vision correction step), a pure-pursuit controller that follows the live navmesh path, and a viser control panel with manual drive, individual motor testing, and live diagnostics (EKF pose, raw gyro rate, stationary yaw-drift tracking to expose gyro bias).
-
-The EKF predicts from gyro yaw rate when available (falls back to the noisy wheel-speed differential otherwise) and can take a measurement update from VO whenever vision gets a confident frame alignment — so the map can be driven by wheel+gyro odometry alone, by vision alone, or by both with vision correcting drift. That's toggleable live from the control panel.
+The EKF predicts from gyro yaw rate when it's available, falling back to the noisier wheel-speed differential otherwise, and takes a measurement update from VO whenever vision gets a confident alignment. So the map can be driven by wheel+gyro odometry alone, by vision alone, or by both with vision correcting drift, and that's toggleable live from the control panel.
 
 ## Testing without a robot
 
-`digital_twin.py` is a simulated version of the whole thing — a virtual robot in a configurable room (a few preset layouts: office, warehouse, maze), with synthetic sensors and a raycaster standing in for the depth camera, running the same navmesh/exploration code the real robot does. Useful for testing navmesh and exploration logic changes without needing physical hardware or dragging a robot around a room.
-
----
+`digital_twin.py` simulates the whole thing: a virtual robot in a configurable room (a few presets, office, warehouse, maze), synthetic sensors, and a raycaster standing in for the depth camera, all running the same navmesh and exploration code the real robot does. It's useful for testing navmesh and exploration changes without needing physical hardware or dragging a robot around a room.
 
 ## Project structure
 
@@ -148,8 +108,6 @@ tools/
   capture_calibration.py Grab calibration images from a live camera
 depth_anything_v2/      Vendored relative-depth model code — currently unused
 ```
-
----
 
 ## Quick start
 
@@ -189,8 +147,6 @@ The depth model downloads automatically on first run (~100 MB for the default Sm
 | `--no-splats` | off | Use a raw point cloud instead of Gaussian splats |
 | `--splat-radius` | `0.012` | Gaussian splat radius in metres |
 
----
-
 ## Viewer legend
 
 | Colour | Layer | Meaning |
@@ -203,13 +159,11 @@ The depth model downloads automatically on first run (~100 MB for the default Sm
 | Teal | `/nav/path` | A\* path to the farthest reachable node |
 | Green | `/nav/trajectory` | Robot trajectory since startup |
 
-Yellow/red/blue debug layers are hidden by default (`NAV_PATH_ONLY = True` in config) since they clutter the view once a map has any size to it — obstacles and the planned path stay visible either way.
-
----
+Yellow, red, and blue debug layers are hidden by default (`NAV_PATH_ONLY = True` in config) since they clutter the view once a map has any real size to it. Obstacles and the planned path stay visible either way.
 
 ## Depth model
 
-Default is **Depth Anything V2 Metric Indoor Small** (~100 MB, downloaded from Hugging Face on first run). Swap it in `tequila/config.py`:
+Default is Depth Anything V2 Metric Indoor Small (~100 MB, downloaded from Hugging Face on first run). Swap it in `tequila/config.py`:
 
 ```python
 # Faster, smaller (default)
@@ -227,9 +181,7 @@ DEPTH_MODEL_ID = "depth-anything/Depth-Anything-V2-Metric-Outdoor-Large-hf"
 | Small | 0.073 | 96.1% | 0.261 m | 24.8 M |
 | Large | 0.056 | 98.4% | 0.206 m | 335 M |
 
-For navigation, Small is good enough — the accuracy gap rarely matters for spotting chairs and walls at the distances a robot actually cares about.
-
----
+Small is good enough for navigation purposes. The accuracy gap rarely matters for spotting chairs and walls at the distances a robot actually cares about.
 
 ## Performance tips
 
@@ -238,8 +190,6 @@ For navigation, Small is good enough — the accuracy gap rarely matters for spo
 | GPU (any CUDA) | Defaults are fine |
 | Mid-range CPU | `--width 640 --frame-skip 60` |
 | Low-spec CPU / RB3 | `--width 640 --nav-interval 2.5` |
-
----
 
 ## Troubleshooting
 
