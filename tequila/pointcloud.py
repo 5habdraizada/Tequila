@@ -1,15 +1,4 @@
-"""
-pointcloud.py — Point-cloud utilities.
-
-Provides:
-  • voxel_downsample_colored / voxel_downsample_pts
-      Fast voxel-grid deduplication using integer hash keys.
-  • sor_colored / sor_pts
-      Statistical Outlier Removal (SOR) based on mean neighbour distance.
-  • segment_product / raycast_occlusion_mask / wall_removal_mask
-      Optional masking helpers (not used in the default pipeline but available
-      for product-photography or indoor-scene filtering).
-"""
+"""Point-cloud utilities: voxel downsampling, outlier removal, and masking helpers."""
 
 import cv2
 import numpy as np
@@ -18,24 +7,9 @@ from scipy.spatial import KDTree
 import tequila.config as cfg
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  Voxel downsampling
-# ─────────────────────────────────────────────────────────────────────────────
-
 def voxel_downsample_colored(pts: np.ndarray, colors: np.ndarray,
                               voxel_size: float) -> tuple[np.ndarray, np.ndarray]:
-    """Downsample a coloured point cloud to one point per voxel cell.
-
-    Uses the first point that falls into each cell (no averaging).
-
-    Args:
-        pts:        (N, 3) float32 positions.
-        colors:     (N, 3) float32 RGB in [0, 1].
-        voxel_size: cell edge length in metres.
-
-    Returns:
-        Tuple of (downsampled_pts, downsampled_colors).
-    """
+    """Downsample to one point per voxel cell (first point wins, no averaging)."""
     vox  = np.floor(pts / voxel_size).astype(np.int64)
     vox -= vox.min(axis=0)
     x, y, z = vox[:, 0], vox[:, 1], vox[:, 2]
@@ -45,31 +19,17 @@ def voxel_downsample_colored(pts: np.ndarray, colors: np.ndarray,
 
 
 def voxel_downsample_pts(pts: np.ndarray, voxel_size: float) -> np.ndarray:
-    """Downsample a position-only point cloud to one point per voxel cell.
-
-    Cheaper than the coloured variant — used by the navmesh pipeline where
-    colours are not needed.
-    """
+    """Position-only variant, cheaper than voxel_downsample_colored — used by the navmesh."""
     vox  = np.floor(pts / voxel_size).astype(np.int64)
     keys = vox[:, 0] * 1_000_000_000 + vox[:, 1] * 1_000_000 + vox[:, 2]
     _, first = np.unique(keys, return_index=True)
     return pts[first]
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  Statistical Outlier Removal (SOR)
-# ─────────────────────────────────────────────────────────────────────────────
-
 def sor_colored(pts: np.ndarray, colors: np.ndarray,
                 nb: int = 20, std_ratio: float = 2.0) -> tuple[np.ndarray, np.ndarray]:
-    """SOR that keeps pts and colors synchronised.
-
-    Removes points whose mean distance to their ``nb`` nearest neighbours
-    exceeds  mean + std_ratio × std  across all points.
-
-    Returns:
-        Filtered (pts, colors).
-    """
+    """Statistical outlier removal: drop points whose mean distance to their `nb`
+    nearest neighbours exceeds mean + std_ratio * std across all points."""
     if len(pts) < nb + 1:
         return pts, colors
     tree       = KDTree(pts)
@@ -81,11 +41,7 @@ def sor_colored(pts: np.ndarray, colors: np.ndarray,
 
 
 def sor_pts(pts: np.ndarray, nb: int = 10, std_ratio: float = 1.5) -> np.ndarray:
-    """Position-only SOR.  Used by the navmesh obstacle cloud.
-
-    Returns:
-        Filtered pts.
-    """
+    """Position-only SOR, used by the navmesh obstacle cloud."""
     if len(pts) < nb + 1:
         return pts
     tree       = KDTree(pts)
@@ -95,17 +51,12 @@ def sor_pts(pts: np.ndarray, nb: int = 10, std_ratio: float = 1.5) -> np.ndarray
     return pts[mean_dists <= threshold]
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  Masking helpers (available but not active in the default pipeline)
-# ─────────────────────────────────────────────────────────────────────────────
+# Masking helpers below aren't used by the default pipeline — kept for
+# product-photography / indoor-scene filtering experiments.
 
 def segment_product(bgr: np.ndarray) -> np.ndarray:
-    """Return a uint8 foreground mask for product-photography images.
-
-    Flood-fills from the image border to identify connected background
-    regions (low saturation, high value), then dilates the result.  The
-    return value is 255 for foreground and 0 for background.
-    """
+    """Foreground mask (255/0) for product photography: flood-fill low-saturation,
+    high-value regions from the image border to find background, then dilate."""
     h, w  = bgr.shape[:2]
     hsv   = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
     s, v  = hsv[:, :, 1], hsv[:, :, 2]
@@ -127,11 +78,8 @@ def segment_product(bgr: np.ndarray) -> np.ndarray:
 
 def raycast_occlusion_mask(depth_m: np.ndarray,
                             product_mask: np.ndarray) -> np.ndarray:
-    """Return a boolean mask that keeps pixels not occluded behind the product.
-
-    Uses a sliding-window local minimum on product pixels to decide whether
-    a background pixel is in the shadow of a foreground object.
-    """
+    """Keep pixels not occluded behind the product, via a sliding-window local
+    minimum over product pixels to detect background pixels in its shadow."""
     sentinel   = depth_m.max() + 1.0
     prod_depth = np.where(product_mask > 0, depth_m, sentinel)
     kernel     = np.ones((cfg.OCCLUSION_WIN_PX,) * 2, np.float32)
@@ -140,11 +88,8 @@ def raycast_occlusion_mask(depth_m: np.ndarray,
 
 
 def wall_removal_mask(depth_m: np.ndarray) -> np.ndarray:
-    """Return a boolean mask that removes flat far-depth regions (walls).
-
-    Pixels that are both deep (top WALL_DEPTH_PERCENTILE %) and locally flat
-    (low local std) are classified as walls and excluded.
-    """
+    """Exclude flat far-depth regions: pixels that are both deep (top
+    WALL_DEPTH_PERCENTILE %) and locally flat (low local std) are walls."""
     d_norm = (depth_m - depth_m.min()) / (depth_m.max() - depth_m.min() + 1e-8)
     r  = cfg.WALL_LOCAL_RADIUS * 2 + 1
     k  = np.ones((r, r), np.float32) / (r * r)

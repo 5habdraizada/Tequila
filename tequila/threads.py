@@ -1,21 +1,15 @@
-"""
-threads.py — The three worker threads and their shared communication queues.
+"""The three worker threads and their shared communication queues.
 
-Thread architecture
--------------------
-  CaptureThread  (Thread 1) — reads frames from webcam or video file.
-  InferenceThread(Thread 2) — runs depth inference + back-projection per frame.
-  NavmeshThread  (Thread 3) — accumulates the world map and recomputes the navmesh.
+  CaptureThread   — reads frames from webcam or video file.
+  InferenceThread — runs depth inference + back-projection per frame.
+  NavmeshThread   — accumulates the world map and recomputes the navmesh.
 
-All queues have maxsize=1 so each consumer always sees the latest data and
-stale items are dropped automatically when a newer item arrives.
-
-Shared queues (also imported by viewer.py)
-------------------------------------------
-  frame_queue   — CaptureThread   → InferenceThread  (raw BGR frames)
-  pts_queue     — InferenceThread → NavmeshThread    (per-frame depth data)
-  navmesh_queue — NavmeshThread   → Viewer           (navmesh overlay dict)
-  map_queue     — NavmeshThread   → Viewer           (accumulated coloured cloud)
+All queues have maxsize=1, so each consumer always sees the latest data and
+stale items are dropped automatically when a newer one arrives:
+  frame_queue   — CaptureThread   -> InferenceThread  (raw BGR frames)
+  pts_queue     — InferenceThread -> NavmeshThread    (per-frame depth data)
+  navmesh_queue — NavmeshThread   -> Viewer           (navmesh overlay dict)
+  map_queue     — NavmeshThread   -> Viewer           (accumulated coloured cloud)
   stop_event    — set by main to request a clean shutdown of all threads
 """
 
@@ -32,10 +26,6 @@ from tequila.depth    import frame_to_result
 from tequila.navmesh  import compute_navmesh, recompute_path
 from tequila.odometry import icp_align, vo_align
 from tequila.pointcloud import voxel_downsample_colored, voxel_downsample_pts, sor_pts
-
-# ─────────────────────────────────────────────────────────────────────────────
-#  Shared inter-thread queues
-# ─────────────────────────────────────────────────────────────────────────────
 
 frame_queue   = queue.Queue(maxsize=1)   # raw BGR frames
 pts_queue     = queue.Queue(maxsize=1)   # per-frame depth data (tuple)
@@ -57,18 +47,14 @@ def _push(q: queue.Queue, item) -> None:
 
 
 def planar_lock(T: np.ndarray) -> np.ndarray:
-    """Project a 4×4 camera pose onto the ground-plane motion manifold.
+    """Project a 4x4 camera pose onto the ground-plane motion manifold.
 
-    The robot drives on a flat floor with a level, forward-facing camera, so the
-    only real degrees of freedom are translation in the X-Z plane and yaw about
-    the world up-axis (nav-Y).  This collapses the pose to exactly that:
-
-      • rotation  → pure yaw about +Y (pitch and roll discarded)
-      • translation → X and Z kept, Y pinned to 0 (the floor-0 camera height)
-
-    Applying this every frame prevents the small per-frame VO errors in
-    pitch/roll/vertical-translation from accumulating into a tilting, drifting
-    world where the floor ends up at different heights across the map.
+    The robot drives on a flat floor with a level, forward-facing camera, so
+    the only real DOF are X-Z translation and yaw about the world up-axis
+    (nav-Y): rotation collapses to pure yaw (pitch/roll discarded), Y is
+    pinned to 0. Applying this every frame stops small per-frame VO errors in
+    pitch/roll/vertical-translation from accumulating into a tilting world
+    where the floor ends up at different heights across the map.
     """
     R = T[:3, :3]
     # Camera forward (−Z in camera frame) expressed in world coords.
@@ -94,21 +80,13 @@ def planar_lock(T: np.ndarray) -> np.ndarray:
     return T_out
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  Thread 1 — Frame capture
-# ─────────────────────────────────────────────────────────────────────────────
-
 class CaptureThread(threading.Thread):
-    """Read frames from a webcam or a video file and push them to frame_queue.
+    """Read frames from a webcam or video file and push them to frame_queue.
 
-    Webcam mode:
-      Captures one frame every ``interval`` seconds, dropping stale queued
-      frames so the inference thread always sees the freshest image.
-
-    Video-file mode:
-      Sends every ``frame_skip``-th frame and blocks until the inference thread
-      consumes it — this prevents racing past the whole video before inference
-      can run.
+    Webcam mode captures one frame every `interval` seconds, dropping stale
+    queued frames. Video-file mode sends every `frame_skip`-th frame and
+    blocks until InferenceThread consumes it, so capture can't race ahead
+    of inference through the whole file.
     """
 
     def __init__(self, source: str, interval: float, frame_skip: int,
@@ -213,18 +191,10 @@ class CaptureThread(threading.Thread):
         print("[Capture] Stopped")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  Thread 2 — Depth inference + point cloud generation
-# ─────────────────────────────────────────────────────────────────────────────
-
 class InferenceThread(threading.Thread):
-    """Run frame_to_result() on every incoming frame and forward the output.
-
-    Pushes a tuple to pts_queue containing:
-      (nav_pts, map_pts, map_colors, img, depth_m, focal, cx, cy, odom_T)
-    where odom_T is the capture-time robot pose (4×4) or None.  Consumed by
-    NavmeshThread.
-    """
+    """Run frame_to_result() on every incoming frame and push a tuple to
+    pts_queue: (nav_pts, map_pts, map_colors, img, depth_m, focal, cx, cy,
+    odom_T), where odom_T is the capture-time robot pose (4x4) or None."""
 
     def __init__(self, model, device: str) -> None:
         super().__init__(daemon=True, name="InferenceThread")
@@ -264,29 +234,22 @@ class InferenceThread(threading.Thread):
         print("[Inference] Stopped")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  Thread 3 — World-map accumulation and navmesh computation
-# ─────────────────────────────────────────────────────────────────────────────
-
 class NavmeshThread(threading.Thread):
     """Accumulate a world-space point cloud and periodically recompute the navmesh.
 
     Frame alignment
     ~~~~~~~~~~~~~~~
     If a frame arrives stamped with a robot odometry pose (level-1 fusion), that
-    pose is used directly to place the frame — anchored so the first frame is the
-    world origin.  Otherwise each frame is aligned to the previous one using
+    pose is used directly to place the frame, anchored so the first frame is the
+    world origin. Otherwise each frame is aligned to the previous one using
     SIFT+PnP visual odometry, with ICP as a fallback (too few texture features).
     The result is a cumulative world transform T_cum.
 
     Map accumulation
     ~~~~~~~~~~~~~~~~
-    Two clouds are maintained:
-      accum_pts       — coarse position-only (for navmesh RANSAC)
-      accum_pts_fine  — fine coloured (for the display map)
-
-    Both are periodically voxel-downsampled and capped at NAV_ACCUM_MAX_PTS to
-    prevent unbounded memory growth.
+    Two clouds are maintained: accum_pts (coarse, position-only, for navmesh
+    RANSAC) and accum_pts_fine (fine, coloured, for the display map). Both are
+    periodically voxel-downsampled and capped at NAV_ACCUM_MAX_PTS.
 
     Navmesh recompute
     ~~~~~~~~~~~~~~~~~
@@ -381,7 +344,6 @@ class NavmeshThread(threading.Thread):
                 except queue.Empty:
                     break
 
-                # ── Frame alignment ───────────────────────────────────────────
                 if odom_T is not None:
                     # Level-1 odometry fusion: place the frame using the robot's
                     # measured wheel-odometry pose instead of visual odometry.
@@ -546,7 +508,7 @@ class NavmeshThread(threading.Thread):
                     R_w = T_cum[:3, :3]
                     t_w = T_cum[:3,  3]
 
-                    # ── Coarse nav accumulation (navmesh RANSAC) ──────────────
+                    # Coarse nav accumulation (navmesh RANSAC)
                     world_nav = (R_w @ new_cam.T).T + t_w
                     if not cfg.ACCUM_ENABLED:
                         accum_pts = world_nav
@@ -560,7 +522,7 @@ class NavmeshThread(threading.Thread):
                         if len(accum_pts) > cfg.NAV_ACCUM_MAX_PTS:
                             accum_pts = accum_pts[-cfg.NAV_ACCUM_MAX_PTS // 2:]
 
-                    # ── Fine coloured accumulation (display map) ──────────────
+                    # Fine coloured accumulation (display map)
                     world_map = (R_w @ new_map_pts.T).T + t_w
                     if len(world_map) == 0:
                         pass   # nothing to add (all points beyond MAP_MAX_DEPTH_M)
@@ -639,14 +601,13 @@ class NavmeshThread(threading.Thread):
 
         print("[Navmesh] Stopped")
 
-    # ── Navmesh worker (separate thread) ──────────────────────────────────────
     def _navmesh_worker(self) -> None:
         """Recompute the navmesh on the latest published cloud, off the main loop.
 
         Reads the (accum_pts, camera pose, trajectory) snapshot published by
-        run(), recomputes the navmesh every NAV_INTERVAL_S, and pushes the result
-        to navmesh_queue.  Keeps its own committed exploration goal so the path
-        does not churn between recomputes.
+        run(), recomputes every NAV_INTERVAL_S, and pushes the result to
+        navmesh_queue. Keeps its own committed exploration goal so the path
+        doesn't churn between recomputes.
         """
         current_goal = None
         last_run     = 0.0

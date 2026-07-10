@@ -72,7 +72,7 @@ class HardwareBridge:
         self._gyro_proc  = None
         self._accel_proc = None
 
-    # ── connection ────────────────────────────────────────────────────────────
+    # connection
 
     def connect(self, retries: int = 10) -> bool:
         port = self._port
@@ -277,7 +277,7 @@ class HardwareBridge:
             self._accel_proc.terminate()
 
 ############################################################
-    # ── background reader ────────────────────────────────────────────────────
+    # background reader
     def _reader(self):
         buf = b""
         while self._running and self._ser:
@@ -350,7 +350,7 @@ class HardwareBridge:
         
         
 
-    # ── public API ────────────────────────────────────────────────────────────
+    # public API
 
     def get_ticks(self):
         return self._tpr

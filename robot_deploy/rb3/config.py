@@ -3,16 +3,16 @@ rb3/config.py — RB3-specific overrides for the TEQUILA pipeline.
 All values here are merged on top of tequila/config.py at startup.
 """
 
-# ── Pico USB serial connection ────────────────────────────────────────────────
+# Pico USB serial connection
 # Set to None to auto-detect the Pico (recommended).
 # Or set explicitly e.g. "/dev/ttyACM0" if auto-detect fails.
 PICO_PORT = None   # None = auto-detect by USB vendor ID (2E8A = Raspberry Pi)
 
-# ── Robot geometry (must match pi/config.py) ──────────────────────────────────
+# Robot geometry (must match pi/config.py)
 WHEEL_RADIUS_M = 0.033   # metres  0.0325
 WHEEL_BASE_M   = 0.172    # metres
 
-# ── Odometry-driven map stitching (level-1 fusion) ────────────────────────────
+# Odometry-driven map stitching (level-1 fusion)
 # When True, each camera frame is placed in the map using the robot's measured
 # wheel-odometry pose (pos_x/pos_y/pos_theta) instead of visual odometry.
 # This is the quick experiment: if wheel odometry alone gives a clean map, VO is
@@ -34,7 +34,7 @@ CAM_MOUNT_FWD  = 0.03   # +forward
 CAM_MOUNT_LEFT = 0.04   # +left
 CAM_MOUNT_UP   = 0.195   # +up
 
-# ── RB3 onboard IMU (Qualcomm SDF / see_workhorse) ───────────────────────────
+# RB3 onboard IMU (Qualcomm SDF / see_workhorse)
 # Gyroscope yaw rate — used in EKF predict instead of the encoder differential.
 # The IMU is far more accurate for rotation than wheel-speed difference, which
 # suffers from wheel-radius mismatch and slip on turns.
@@ -62,7 +62,7 @@ MAX_GYRO_RATE = 3.0   # rad/s  (~172 °/s; RB3 max is 1 rad/s so 3× headroom)
 ACCEL_FWD_IDX  = 0   # X assumed forward on the RB3 Gen 2 mounting
 ACCEL_FWD_SIGN = 1   # positive = forward; flip to -1 if wrong
 
-# ── RB3 Gen 2 camera ─────────────────────────────────────────────────────────
+# RB3 Gen 2 camera
 # The RB3 Gen 2 exposes cameras as V4L2 devices.
 # Run `ls /dev/video*` on the RB3 to confirm the index.
 CAMERA_INDEX = 0            # /dev/video0  (change if needed)
@@ -81,7 +81,7 @@ CAMERA_HEIGHT = 720
 # undistorted to a true rectilinear image first).
 FOV_H_DEG = 128.0
 
-# ── Fisheye undistortion (Thundercomm kit lens on the IMX577) ─────────────────
+# Fisheye undistortion (Thundercomm kit lens on the IMX577)
 # Undistort each frame from fisheye to rectilinear before depth, so the pinhole
 # back-projection is valid (kills the radial fan-splay in the map).
 # Equidistant model from the lens optics:
@@ -96,7 +96,7 @@ UNDISTORT_FOV_DEG    = 90.0     # output rectilinear HFOV (tune live; keep < ~12
 FISHEYE_CALIB_NPZ    = "tools/fishEye_RB3_CameraCalibration_fisheye.npz"
 FISHEYE_CALIB_WH     = (1280, 720)   # capture_calibration.py grabs at 1280×720
 
-# ── Navigation ────────────────────────────────────────────────────────────────
+# Navigation
 # Maximum linear and angular speed sent to the Pi
 MAX_V_LIN  = 0.1           # m/s  — conservative for first runs
 MAX_V_ANG  = 0.8           # rad/s
@@ -107,7 +107,7 @@ LOOKAHEAD_M = 0.50          # metres ahead on the path to aim for
 # Stop if next waypoint is closer than this (waypoint reached)
 WP_REACHED_M = 0.20         # metres
 
-# ── Depth model (override tequila/config.py defaults) ────────────────────────
+# Depth model (override tequila/config.py defaults)
 # Use the small indoor metric model — fast enough on RB3 CPU
 DEPTH_MODEL_ID = "depth-anything/Depth-Anything-V2-Metric-Indoor-Small-hf"
 INFER_WIDTH    = 640         # lower res for speed on embedded CPU
@@ -116,7 +116,7 @@ MAP_MAX_DEPTH_M = 2.0        # display cloud: keep only nearby, reliable geometr
 NAV_MAX_DEPTH_M = 4.0        # navmesh cloud: a bit further for look-ahead, but
                              # still capped to drop far obstacle/floor noise
 
-# ── TSDF volumetric fusion ────────────────────────────────────────────────────
+# TSDF volumetric fusion
 # Average overlapping depth observations into a voxel volume (noise cancels)
 # instead of accumulating raw points.  Needs Open3D on the RB3
 # (`pip install open3d`); if it's missing the pipeline falls back automatically.
@@ -124,12 +124,12 @@ USE_TSDF     = True
 TSDF_VOXEL_M = 0.03          # voxel size (m) — smaller = finer + slower/more RAM
 TSDF_TRUNC_M = 0.12          # signed-distance truncation (~4 voxels)
 
-# ── Timing / capture ──────────────────────────────────────────────────────────
+# Timing / capture
 MIN_FRAME_BRIGHTNESS = 10.0  # skip near-black warm-up frames (mean < this)
 NAV_INTERVAL_S       = 2.5   # recompute the navmesh less often so its (blocking)
                              # pass doesn't stall the map display as often
 
-# ── Viser viewer ─────────────────────────────────────────────────────────────
+# Viser viewer
 PORT = 8080                  # open http://<rb3-ip>:8080 on any browser on the LAN
 
 

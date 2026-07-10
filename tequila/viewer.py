@@ -1,18 +1,9 @@
-"""
-viewer.py — Viser 3-D viewer: scene update helpers and the main viewer loop.
+"""Viser 3-D viewer: scene update helpers and the main viewer loop.
 
-The viewer loop polls two queues every 50 ms:
-  map_queue     — accumulated coloured point cloud (updates every inference frame)
-  navmesh_queue — navmesh overlay: obstacles, free nodes, edges, A* path
-
-Visual legend
--------------
-  Orange points (/nav/obstacles)  — detected obstacles (height-filtered + denoised).
-  Red   points (/nav/blocked)     — navmesh nodes blocked by obstacles.
-  Yellow points (/nav/free)       — free (passable) navmesh nodes.
-  Blue  lines  (/nav/edges)       — passable edges between free nodes.
-  Teal  line   (/nav/path)        — A* path to the farthest reachable node.
-  Teal  points (/nav/path_nodes)  — waypoints along the path.
+The loop polls map_queue (accumulated coloured cloud, every inference frame)
+and navmesh_queue (obstacles/nodes/edges/A* path, every navmesh recompute)
+every 50 ms. Scene layers: orange obstacles, red blocked nodes, yellow free
+nodes, blue edges, teal A* path.
 """
 
 import queue
@@ -27,19 +18,11 @@ from tequila.threads import (
 )
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  Scene update helpers
-# ─────────────────────────────────────────────────────────────────────────────
-
 def update_navmesh(server, nav: dict) -> None:
-    """Push all navmesh layers to the viser scene.
+    """Push all navmesh layers to the viser scene (dict from compute_navmesh()).
 
-    Each layer is updated atomically — stale items from the previous navmesh
-    recompute are automatically replaced when the new ones are added.
-
-    Args:
-        server: viser.ViserServer instance.
-        nav:    dict returned by compute_navmesh(), plus nav["accum_pts"].
+    Each layer is replaced atomically, so stale items from the previous
+    recompute disappear as soon as the new ones are added.
     """
     clean_obs     = nav["clean_obs"]
     free_nodes    = nav["free_nodes"]
@@ -47,7 +30,6 @@ def update_navmesh(server, nav: dict) -> None:
     edges         = nav["edges"]
     path_pts      = nav["path_pts"]
 
-    # Obstacle cloud (orange) — kept in both modes as map context.
     if len(clean_obs) > 0:
         server.scene.add_point_cloud(
             "/nav/obstacles",
@@ -56,11 +38,9 @@ def update_navmesh(server, nav: dict) -> None:
             point_size = 0.015,
         )
 
-    # ── Debug layers: full node grid + edge web + trajectory ──────────────────
-    # Hidden by default (cfg.NAV_PATH_ONLY) — these are what made the overlay
-    # look cluttered.  Set NAV_PATH_ONLY=False to bring them back for debugging.
+    # Debug layers (full node grid, edge web, trajectory) are hidden by
+    # default since they clutter the overlay; NAV_PATH_ONLY=False re-enables.
     if not cfg.NAV_PATH_ONLY:
-        # Graph edges (blue lines)
         if edges:
             ea        = np.array(edges)
             seg_pts   = np.stack([free_nodes[ea[:, 0]],
@@ -69,7 +49,6 @@ def update_navmesh(server, nav: dict) -> None:
             server.scene.add_line_segments(
                 "/nav/edges", points=seg_pts, colors=seg_color, line_width=2.0)
 
-        # Blocked nodes (red)
         if len(blocked_nodes) > 0:
             server.scene.add_point_cloud(
                 "/nav/blocked",
@@ -78,7 +57,6 @@ def update_navmesh(server, nav: dict) -> None:
                 point_size = 0.025,
             )
 
-        # Free nodes (yellow)
         if len(free_nodes) > 0:
             server.scene.add_point_cloud(
                 "/nav/free",
@@ -87,7 +65,6 @@ def update_navmesh(server, nav: dict) -> None:
                 point_size = 0.025,
             )
 
-        # Robot trajectory — every camera position since frame 1 (green line)
         trajectory = nav.get("trajectory", None)
         if trajectory is not None and len(trajectory) >= 2:
             traj_segs  = np.stack([trajectory[:-1], trajectory[1:]], axis=1)
@@ -101,7 +78,7 @@ def update_navmesh(server, nav: dict) -> None:
                 point_size = 0.02,
             )
 
-    # ── A* path (teal line + waypoints) — always shown ────────────────────────
+    # A* path is always shown, regardless of NAV_PATH_ONLY.
     if len(path_pts) >= 2:
         path_segs  = np.stack([path_pts[:-1], path_pts[1:]], axis=1)
         path_color = np.tile([[0.0, 0.95, 0.88]], (len(path_segs), 2, 1)).astype(np.float32)
@@ -115,10 +92,6 @@ def update_navmesh(server, nav: dict) -> None:
         )
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  Main viewer loop
-# ─────────────────────────────────────────────────────────────────────────────
-
 def run_viewer(model,
                device: str,
                source: str,
@@ -126,20 +99,8 @@ def run_viewer(model,
                frame_skip: int,
                up_idx: int,
                port: int) -> None:
-    """Start the three worker threads, open the viser server, and run the loop.
-
-    The loop polls map_queue and navmesh_queue at ~20 Hz and updates the
-    scene.  Blocks until stop_event is set (Ctrl-C from main).
-
-    Args:
-        model:      depth model returned by load_model().
-        device:     "cuda" or "cpu".
-        source:     webcam index (str of int) or path to a video file.
-        interval:   seconds between webcam captures.
-        frame_skip: process every Nth frame (video-file mode).
-        up_idx:     index of the up axis (0=X, 1=Y, 2=Z).
-        port:       viser web-viewer port.
-    """
+    """Start the worker threads and viser server, then poll the queues at ~20 Hz
+    updating the scene until stop_event is set (Ctrl-C from main)."""
     import viser
 
     threads = [
@@ -164,8 +125,6 @@ def run_viewer(model,
         client.camera.up       = (0.0, 1.0, 0.0)
 
     while not stop_event.is_set():
-
-        # Accumulated coloured map — updates every inference frame
         try:
             m = map_queue.get_nowait()
             pts    = m["pts"]
@@ -202,7 +161,6 @@ def run_viewer(model,
         except queue.Empty:
             pass
 
-        # Navmesh overlay — updates every navmesh recompute
         try:
             nav = navmesh_queue.get_nowait()
             update_navmesh(server, nav)

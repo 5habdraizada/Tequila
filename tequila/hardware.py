@@ -1,12 +1,6 @@
-"""
-tequila/hardware.py  —  Runs on the RB3.
-
-Connects to the Pi bridge over TCP.
-  Receives: encoder tick counts  (tick_l, tick_r, ticks_per_rev, ts)
-  Sends:    velocity commands    (v_lin, v_ang)
-
-Drop-in replacement for SyntheticSensors in the real robot pipeline.
-"""
+"""TCP client run on the RB3 that talks to pi_bridge/bridge.py on the Pi:
+receives encoder ticks, sends velocity commands. Drop-in replacement for
+SyntheticSensors in the real robot pipeline."""
 
 import json
 import math
@@ -16,16 +10,12 @@ import time
 
 
 class HardwareBridge:
-    """
-    TCP client that talks to pi_bridge/bridge.py running on the Pi.
+    """TCP client for the Pi bridge.
 
-    Usage:
-        hw = HardwareBridge(pi_ip="192.168.1.42")
-        hw.connect()
-
-        # In your control loop:
-        data   = hw.get_odometry()   # {v_l, v_r, dt}
-        hw.send_cmd(v_lin, v_ang)
+    hw = HardwareBridge(pi_ip="192.168.1.42")
+    hw.connect()
+    data = hw.get_odometry()   # {v_l, v_r, dt}
+    hw.send_cmd(v_lin, v_ang)
     """
 
     PORT     = 9100
@@ -41,14 +31,11 @@ class HardwareBridge:
         self._lock        = threading.Lock()
         self._running     = False
 
-        # Latest decoded odometry
         self._v_l  = 0.0   # left  wheel speed  (m/s)
         self._v_r  = 0.0   # right wheel speed  (m/s)
         self._dt   = 0.02  # time since last packet (s)
         self._last_ts     = time.time()
         self._ticks_per_rev = 360  # updated from first packet
-
-    # ── connection ────────────────────────────────────────────────────────────
 
     def connect(self, retries: int = 10) -> bool:
         for attempt in range(1, retries + 1):
@@ -74,8 +61,6 @@ class HardwareBridge:
                 self._sock.close()
             except OSError:
                 pass
-
-    # ── background reader ─────────────────────────────────────────────────────
 
     def _reader(self):
         buf = ""
@@ -119,13 +104,8 @@ class HardwareBridge:
             self._v_r = v_r
             self._dt  = dt
 
-    # ── API used by TEQUILA ───────────────────────────────────────────────────
-
     def get_odometry(self) -> dict:
-        """
-        Returns the latest wheel speeds.
-        Compatible with EKF2D.predict(v_l, v_r, dt).
-        """
+        """Latest wheel speeds, compatible with EKF2D.predict(v_l, v_r, dt)."""
         with self._lock:
             return {
                 "v_l": self._v_l,

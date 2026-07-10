@@ -34,10 +34,8 @@ from tequila.navmesh import compute_navmesh
 from tequila.viewer import update_navmesh
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 #  Scene library
 #  Obstacle format: (center_x, center_z, half_x, half_z, height, (R, G, B))
-# ─────────────────────────────────────────────────────────────────────────────
 
 SCENES: dict = {
     "Empty Room": {
@@ -75,9 +73,7 @@ SCENES: dict = {
 }
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 #  Raycaster
-# ─────────────────────────────────────────────────────────────────────────────
 
 class Raycaster:
     W      = 320
@@ -182,9 +178,7 @@ class Raycaster:
         colors[c] = col
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 #  Robot / sensors / estimators
-# ─────────────────────────────────────────────────────────────────────────────
 
 class Robot:
     WHEEL_BASE = 0.35
@@ -255,9 +249,7 @@ def yaw_to_wxyz(yaw):
     return (float(np.cos(yaw/2)), 0.0, float(np.sin(yaw/2)), 0.0)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 #  DigitalTwin
-# ─────────────────────────────────────────────────────────────────────────────
 
 class DigitalTwin:
     SIM_HZ      = 50
@@ -310,7 +302,7 @@ class DigitalTwin:
         self.sigma_wheel = 0.02
         self.sigma_gyro  = 0.03
 
-    # ── scene management ──────────────────────────────────────────────────────
+    # scene management
 
     def load_scene(self, name: str):
         self.scene_name = name
@@ -332,7 +324,7 @@ class DigitalTwin:
         self._prev_pos = (0.0, 0.0)
         self._clear_map()
 
-    # ── visited-grid helpers ──────────────────────────────────────────────────
+    # visited-grid helpers
 
     def _cell(self, x: float, z: float) -> tuple[int, int]:
         return (int(np.floor(x / self._visit_res)),
@@ -344,7 +336,7 @@ class DigitalTwin:
     def _is_visited(self, x: float, z: float) -> bool:
         return self._cell(x, z) in self._visited
 
-    # ── random frontier sampling ──────────────────────────────────────────────
+    # random frontier sampling
 
     def _sample_goal(self) -> tuple[float, float] | None:
         """
@@ -383,7 +375,7 @@ class DigitalTwin:
 
         return best
 
-    # ── auto-navigation ───────────────────────────────────────────────────────
+    # auto-navigation
 
     def _auto_velocity(self, dt: float) -> tuple[float, float]:
         rx, rz, ryaw = self.robot.pose
@@ -457,7 +449,7 @@ class DigitalTwin:
         v_lin = float(np.clip(dist * 0.9, 0.0, 0.6)) if abs(yaw_err) < 0.45 else 0.0
         return v_lin, v_ang
 
-    # ── collision helpers ─────────────────────────────────────────────────────
+    # collision helpers
 
     def _pos_valid(self, x: float, z: float, clearance: float = 0.32) -> bool:
         """Return True if (x, z) is inside the room and not inside any obstacle."""
@@ -500,7 +492,7 @@ class DigitalTwin:
                 return False
         return True
 
-    # ── navmesh A* routing ────────────────────────────────────────────────────
+    # navmesh A* routing
 
     def _navmesh_path_to(self, gx: float, gz: float) -> list[tuple[float, float]]:
         """A* through navmesh free nodes.  Returns list of (x, z) waypoints or []."""
@@ -553,7 +545,7 @@ class DigitalTwin:
                 self._path_wps = nav_wps
                 self._wp_idx   = 0
 
-    # ── back-projection ───────────────────────────────────────────────────────
+    # back-projection
 
     def _backproject(self, depth_m, bgr, robot_x, robot_z, yaw):
         h, w   = depth_m.shape
@@ -590,7 +582,7 @@ class DigitalTwin:
             mp, mc = np.zeros((0,3),np.float32), np.zeros((0,3),np.float32)
         return nav_pts, mp, mc
 
-    # ── minimap ───────────────────────────────────────────────────────────────
+    # minimap
 
     def _make_minimap(self, size: int = 300) -> np.ndarray:
         """Return a top-down (size×size) RGB uint8 minimap."""
@@ -654,7 +646,7 @@ class DigitalTwin:
                     cv2.FONT_HERSHEY_SIMPLEX, 0.4, (180,180,180), 1)
         return img  # RGB uint8
 
-    # ── simulation thread ─────────────────────────────────────────────────────
+    # simulation thread
 
     def _sim_loop(self):
         dt       = 1.0 / self.SIM_HZ
@@ -726,7 +718,7 @@ class DigitalTwin:
 
             time.sleep(max(0.0, dt - (time.time() - t0)))
 
-    # ── scene & display helpers ───────────────────────────────────────────────
+    # scene & display helpers
 
     def _build_room(self, server):
         hw, hd = self.rc.room_w / 2, self.rc.room_d / 2
@@ -857,13 +849,13 @@ class DigitalTwin:
                                 position=(0.0, self.rc.ceiling + 0.6, -hd + 1.0),
                                 wxyz=(1.0, 0.0, 0.0, 0.0))
 
-    # ── main entry point ──────────────────────────────────────────────────────
+    # main entry point
 
     def run(self):
         server = viser.ViserServer(port=self.port)
         print(f"\n[Digital Twin] Open  http://localhost:{self.port}  in your browser\n")
 
-        # ── GUI ───────────────────────────────────────────────────────────────
+        # GUI
         with server.gui.add_folder("Scene"):
             g_scene  = server.gui.add_dropdown(
                 "Room", list(SCENES.keys()), initial_value=self.scene_name)
@@ -892,7 +884,7 @@ class DigitalTwin:
                 initial_value=self.MAP_EVERY_S)
             g_clear = server.gui.add_button("Clear Map")
 
-        # ── callbacks ─────────────────────────────────────────────────────────
+        # callbacks
         @g_auto.on_update
         def _toggle_auto(_):
             self.auto_explore   = g_auto.value
@@ -917,7 +909,7 @@ class DigitalTwin:
         self._build_room(server)
         threading.Thread(target=self._sim_loop, daemon=True).start()
 
-        # ── viewer loop ───────────────────────────────────────────────────────
+        # viewer loop
         try:
             while True:
                 self.auto_explore  = bool(g_auto.value)
@@ -941,7 +933,6 @@ class DigitalTwin:
             print("\nStopped.")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     import argparse

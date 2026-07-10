@@ -39,9 +39,7 @@ import config as rb3_cfg
 from hardware import HardwareBridge
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 #  Odometry → camera pose (level-1 fusion source)
-# ─────────────────────────────────────────────────────────────────────────────
 
 def make_odom_source(ekf: "EKF2D"):
     """Build a callable that returns the camera's world pose (4×4, nav coords).
@@ -145,9 +143,7 @@ def make_vo_update_cb(ekf: "EKF2D"):
     return _cb
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 #  EKF
-# ─────────────────────────────────────────────────────────────────────────────
 
 class EKF2D:
     """Extended Kalman Filter for 2D ground-robot localisation.
@@ -241,9 +237,7 @@ class EKF2D:
             return float(self.mu[0]), float(self.mu[1]), float(self.mu[2])
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 #  Shared robot state (read by GUI, written by controller)
-# ─────────────────────────────────────────────────────────────────────────────
 
 class RobotState:
     def __init__(self):
@@ -270,9 +264,7 @@ class RobotState:
             return self.__dict__.copy()
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 #  Controller
-# ─────────────────────────────────────────────────────────────────────────────
 
 class Controller:
     HZ = 20
@@ -363,9 +355,7 @@ class Controller:
         return v_lin, v_ang
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 #  Viewer + GUI
-# ─────────────────────────────────────────────────────────────────────────────
 
 def run_robot(model, device, source, port, controller: Controller | None,
               state: RobotState, odom_source=None, vo_update_cb=None):
@@ -393,7 +383,7 @@ def run_robot(model, device, source, port, controller: Controller | None,
     print(f"\n[Viewer] Open  http://<rb3-ip>:{port}  in your browser")
     print("[Viewer] Ctrl-C to quit\n")
 
-    # ── GUI panels ────────────────────────────────────────────────────────────
+    # GUI panels
 
     with server.gui.add_folder("🤖 Robot Control"):
         g_manual = server.gui.add_checkbox("Manual Drive", initial_value=False)
@@ -434,7 +424,7 @@ def run_robot(model, device, source, port, controller: Controller | None,
             initial_value=bool(rb3_cfg.USE_VO_CORRECTION and vo_cb_full is not None))
         g_vo_corr.disabled = vo_cb_full is None   # nothing to toggle without VO
 
-    # ── callbacks ─────────────────────────────────────────────────────────────
+    # callbacks
 
     @g_manual.on_update
     def _toggle_manual(_):
@@ -498,7 +488,7 @@ def run_robot(model, device, source, port, controller: Controller | None,
         print(f"[Main] VO drift correction: "
               f"{'ENABLED' if g_vo_corr.value else 'DISABLED (pure odometry)'}")
 
-    # ── helpers ───────────────────────────────────────────────────────────────
+    # helpers
 
     def _set_camera(client, centroid):
         client.camera.position = (0.0, 2.0, 4.0)
@@ -510,7 +500,7 @@ def run_robot(model, device, source, port, controller: Controller | None,
     stat_yaw0: float | None = None   # EKF yaw when the robot last went still
     stat_t0   = 0.0                  # time it went still (for drift-rate calc)
 
-    # ── main loop ─────────────────────────────────────────────────────────────
+    # main loop
 
     while not stop_event.is_set():
 
@@ -658,9 +648,7 @@ def run_robot(model, device, source, port, controller: Controller | None,
         t.join(timeout=5)
     print("All threads stopped.")
 
-# ─────────────────────────────────────────────────────────────────────────────
 #  Entry point
-# ─────────────────────────────────────────────────────────────────────────────
 
 def main():
     parser = argparse.ArgumentParser(description="TEQUILA on RB3 Gen 2")
