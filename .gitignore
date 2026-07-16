@@ -18,6 +18,9 @@ outputs/
 *.jpeg
 *.mp4
 *.docx
+!imgs/*.png
+!imgs/*.jpg
+!imgs/*.jpeg
 
 # JS tooling
 node_modules/

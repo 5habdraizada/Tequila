@@ -12,13 +12,20 @@ Every frame becomes a coloured point cloud that gets fused into a growing world 
 
 All of it streams to a browser at `http://localhost:8080` (or `http://<rb3-ip>:8080` on the robot) through [viser](https://viser.studio). Nothing to install on the viewing device, just open the page.
 
+<p>
+  <img src="imgs/one.jpeg" width="49%" alt="Live point cloud map in the viser viewer, top-down view" />
+  <img src="imgs/two.png" width="49%" alt="Same map from a lower angle, showing walls and floor coverage" />
+</p>
+
+The green cube is the robot's current pose, the teal line is its trajectory, and the orange points are flagged obstacles. This particular run shows some of the fan-out drift mentioned below, the same wall painted into the map at a few slightly different angles.
+
 ```
 Camera / Video
       │
       ▼
  CaptureThread ──► InferenceThread ──► NavmeshThread
   (grabs frames)    (depth model,        (floor fit, obstacle
-                      SIFT+PnP VO,         filter, A* — runs on
+                      SIFT+PnP VO,         filter, A*, runs on
                       back-projection)     its own worker thread)
                         │                    │
                         ▼                    ▼
@@ -49,8 +56,6 @@ The odom/VO fusion right now is a coarse toggle rather than a properly tuned fil
 
 `robot_deploy/rb3/install.sh` is out of date. It still references a separate Pi bridge process (`pi/bridge.py`, a `PI_IP` setting) from an earlier architecture. The current code talks to the Pico directly over USB serial, the install script just never got updated.
 
-There's some dead weight sitting in the repo too. `depth_anything_v2/` (the vendored relative-depth model code) isn't imported by anything anymore since the pipeline moved to the metric model. `tequila/hardware.py` is the same story, a TCP client for an even older setup that predates talking to the Pico directly over serial (`robot_deploy/rb3/hardware.py` is the one actually used now).
-
 And recovering from a bad map is entirely manual. If it fans out, the fix today is hit Reset Map and drive around again.
 
 If the map in the viewer looks like a clean, recognizable room, that's the pipeline working as intended. If it looks like a wall got put through a blender, that's yaw drift, and it's the main thing left to fix.
@@ -77,7 +82,9 @@ Either way, since the robot only drives on a flat floor, the pose gets projected
 
 ## Running it on the robot
 
-`robot_deploy/` is the RB3 Gen 2 deployment, kept separate from the core pipeline. `robot_deploy/pico/` is MicroPython firmware for the Pi Pico: it reads quadrature encoders through hardware interrupts, drives the motors, and streams encoder ticks and IMU readings to the RB3 over USB serial as newline-delimited JSON. `robot_deploy/rb3/` runs on the RB3 itself — `hardware.py` is the serial client, and `main.py` wires up an EKF2D (wheel + gyro dead-reckoning with an optional vision correction step), a pure-pursuit controller that follows the live navmesh path, and a viser control panel with manual drive, individual motor testing, and live diagnostics like EKF pose, raw gyro rate, and a stationary yaw-drift readout for spotting gyro bias.
+<img src="imgs/three.png" width="500" alt="The RB3 Gen 2 robot on a desk, camera mounted on top, Pico and wiring visible" />
+
+`robot_deploy/` is the RB3 Gen 2 deployment, kept separate from the core pipeline. `robot_deploy/pico/` is MicroPython firmware for the Pi Pico: it reads quadrature encoders through hardware interrupts, drives the motors, and streams encoder ticks and IMU readings to the RB3 over USB serial as newline-delimited JSON. `robot_deploy/rb3/` runs on the RB3 itself: `hardware.py` is the serial client, and `main.py` wires up an EKF2D (wheel + gyro dead-reckoning with an optional vision correction step), a pure-pursuit controller that follows the live navmesh path, and a viser control panel with manual drive, individual motor testing, and live diagnostics like EKF pose, raw gyro rate, and a stationary yaw-drift readout for spotting gyro bias.
 
 The EKF predicts from gyro yaw rate when it's available, falling back to the noisier wheel-speed differential otherwise, and takes a measurement update from VO whenever vision gets a confident alignment. So the map can be driven by wheel+gyro odometry alone, by vision alone, or by both with vision correcting drift, and that's toggleable live from the control panel.
 
@@ -88,7 +95,7 @@ The EKF predicts from gyro yaw rate when it's available, falling back to the noi
 ## Project structure
 
 ```
-main.py                 Entry point — CLI args, model loading, starts the viewer
+main.py                 Entry point, CLI args, model loading, starts the viewer
 digital_twin.py          Simulated robot + room for testing without hardware
 tequila/
   config.py              All tunable constants
@@ -99,14 +106,14 @@ tequila/
   threads.py                  CaptureThread, InferenceThread, NavmeshThread + queues
   viewer.py                    Viser scene updates and the main viewer loop
   tsdf.py                       Optional TSDF volumetric fusion (needs Open3D)
-  hardware.py                   TCP hardware bridge — unused, predates robot_deploy/
+  hardware.py                   TCP hardware bridge, unused, predates robot_deploy/
 robot_deploy/
-  pico/                   MicroPython firmware — encoders, motors, IMU streaming
-  rb3/                    Runs on the RB3 — EKF, hardware bridge, control panel
+  pico/                   MicroPython firmware: encoders, motors, IMU streaming
+  rb3/                    Runs on the RB3: EKF, hardware bridge, control panel
 tools/
   camera_calibration.py  Fisheye chessboard calibration
   capture_calibration.py Grab calibration images from a live camera
-depth_anything_v2/      Vendored relative-depth model code — currently unused
+depth_anything_v2/      Vendored relative-depth model code, currently unused
 ```
 
 ## Quick start
@@ -121,7 +128,7 @@ python main.py
 # Video file
 python main.py --source path/to/video.mp4
 
-# Slower CPU machine — lower resolution is roughly 4x faster
+# Slower CPU machine: lower resolution is roughly 4x faster
 python main.py --width 640
 ```
 
@@ -141,7 +148,7 @@ The depth model downloads automatically on first run (~100 MB for the default Sm
 | `--up-axis` | `y` | Which axis points up: `x`, `y`, `z`, or `auto` |
 | `--max-tilt` | `30.0` | Max floor tilt in degrees |
 | `--obs-max-height` | `0.80` | Max obstacle height above floor (metres) |
-| `--no-accum` | off | Single-frame mode — no map accumulation |
+| `--no-accum` | off | Single-frame mode, no map accumulation |
 | `--map-depth` | `3.0` | Max depth of accumulated map points (metres) |
 | `--port` | `8080` | Viser web viewer port |
 | `--no-splats` | off | Use a raw point cloud instead of Gaussian splats |
@@ -197,9 +204,9 @@ Small is good enough for navigation purposes. The accuracy gap rarely matters fo
 |---------|-------------|-----|
 | Map fans out into ghost copies of the same wall | Yaw drift accumulating between frames | Known issue, see [Current problems](#current-problems). Reset Map and try driving more slowly/steadily |
 | Very slow | No GPU, or the Large model | `--width 640`, confirm `DEPTH_MODEL_ID` is the Small variant |
-| Floor detected in mid-air | Drift rotated the cloud so GPP grabbed the wrong surface | Should self-correct — GPP validates against camera height and retries with RANSAC. If it doesn't, the drift is probably too severe already |
+| Floor detected in mid-air | Drift rotated the cloud so GPP grabbed the wrong surface | Should self-correct: GPP validates against camera height and retries with RANSAC. If it doesn't, the drift is probably too severe already |
 | False obstacles on open floor | Depth noise close to the floor plane | Raise `OBS_HEIGHT_MIN` in `config.py` |
 | Rays/spikes trailing behind objects | Flying pixels not fully masked | Lower `EDGE_THRESHOLD` in `config.py` |
-| `path=0 nodes` in the console | No free nodes connected to the camera's position | Camera is probably boxed in by obstacles — check `OBS_CLEARANCE_R` |
-| SIFT+PnP keeps failing | Low-texture environment (plain walls, dim room) | Expected — ICP fallback should catch it. If both fail, the frame gets skipped |
+| `path=0 nodes` in the console | No free nodes connected to the camera's position | Camera is probably boxed in by obstacles, check `OBS_CLEARANCE_R` |
+| SIFT+PnP keeps failing | Low-texture environment (plain walls, dim room) | Expected. ICP fallback should catch it. If both fail, the frame gets skipped |
 | EKF pose drifts while the robot sits still | Gyro bias | Check the "yaw drift (still)" readout in the control panel; this is the main open problem on the hardware side |
