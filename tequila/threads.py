@@ -11,6 +11,9 @@ stale items are dropped automatically when a newer one arrives:
   navmesh_queue — NavmeshThread   -> Viewer           (navmesh overlay dict)
   map_queue     — NavmeshThread   -> Viewer           (accumulated coloured cloud)
   stop_event    — set by main to request a clean shutdown of all threads
+  motion_gate   — stop-and-go interlock: held by CaptureThread from just
+                  before a frame is grabbed until NavmeshThread has finished
+                  with it, so the robot stays still while a frame is in flight
 """
 
 import queue
@@ -34,6 +37,58 @@ map_queue     = queue.Queue(maxsize=1)   # accumulated coloured point cloud
 stop_event    = threading.Event()        # set this to shut down all threads
 reset_map_event = threading.Event()      # set to clear the accumulated map
                                          # (e.g. after changing camera FOV)
+
+
+class MotionGate:
+    """Stop-and-go interlock: keeps the robot still while a frame is in flight.
+
+    CaptureThread holds the gate just before grabbing a frame; NavmeshThread
+    releases it once that frame has been dealt with (integrated into the map,
+    or rejected by the alignment checks).  The motor controller polls
+    `blocked` and commands zero velocity while it is set, so the robot only
+    ever drives in the gap between frames.
+
+    Why: depth inference takes ~0.2-2 s.  A frame captured while moving is
+    motion-blurred, and the pose stamped on it at capture time describes a
+    position the robot has already left by the time the frame is placed — both
+    of which smear the fused map.  Holding still removes both at the cost of
+    a stop-start drive pattern.
+
+    Holds collapse rather than nest: the queues are maxsize=1 and drop stale
+    items, so a captured frame may never reach the map.  A counting gate would
+    leak a hold every time that happened and freeze the robot for good; an
+    Event cannot.  `wait_clear()` carries a timeout for the same reason.
+    """
+
+    def __init__(self) -> None:
+        self._held = threading.Event()
+
+    @property
+    def blocked(self) -> bool:
+        """True while the robot must stay still."""
+        return self._held.is_set()
+
+    def hold(self) -> None:
+        self._held.set()
+
+    def release(self) -> None:
+        self._held.clear()
+
+    def wait_clear(self, timeout: float) -> bool:
+        """Block until the gate is released.  Returns False on timeout, having
+        force-released it — a stalled pipeline must not strand the robot."""
+        deadline = time.time() + timeout
+        while self._held.is_set() and not stop_event.is_set():
+            if time.time() >= deadline:
+                self.release()
+                print(f"[MotionGate] Frame not processed within {timeout:.1f}s "
+                      "— releasing hold")
+                return False
+            time.sleep(0.01)
+        return True
+
+
+motion_gate = MotionGate()               # shared stop-and-go interlock
 
 
 def _push(q: queue.Queue, item) -> None:
@@ -145,7 +200,19 @@ class CaptureThread(threading.Thread):
 
     def run(self) -> None:
         frame_idx = 0
+        gated     = bool(getattr(cfg, "STOP_AND_GO", False)) and not self.is_file
+        if gated:
+            print(f"[Capture] Stop-and-go enabled "
+                  f"(settle {cfg.STOP_AND_GO_SETTLE_S:.2f}s)")
+
         while not stop_event.is_set():
+            # Stop-and-go: brake first, let the chassis settle, and only then
+            # grab the frame — so the image is sharp and the pose sampled below
+            # is the pose the robot is actually standing at.
+            if gated:
+                motion_gate.hold()
+                time.sleep(cfg.STOP_AND_GO_SETTLE_S)
+
             ret, frame = self.cap.read()
             if not ret:
                 if self.is_file:
@@ -185,6 +252,11 @@ class CaptureThread(threading.Thread):
             else:
                 # Webcam: always keep the freshest frame.
                 _push(frame_queue, (frame, pose))
+                if gated:
+                    # Stay still until the map has this frame, then give the
+                    # controller `interval` seconds of clear road before the
+                    # next capture brakes it again.
+                    motion_gate.wait_clear(cfg.STOP_AND_GO_TIMEOUT_S)
                 time.sleep(self.interval)
 
         self.cap.release()
@@ -334,7 +406,8 @@ class NavmeshThread(threading.Thread):
                     self._nav_reset = True
                 print("[Navmesh] Map reset — accumulation cleared")
 
-            got_new = False
+            got_new     = False
+            drained_any = False   # consumed a frame this pass, placed or not
 
             # Drain pts_queue — process all pending frames before sleeping.
             while True:
@@ -343,6 +416,10 @@ class NavmeshThread(threading.Thread):
                      new_img, new_depth, focal, cx, cy, odom_T) = pts_queue.get_nowait()
                 except queue.Empty:
                     break
+
+                # Set before any of the skip paths below: a rejected frame is
+                # still a finished frame as far as the stop-and-go hold goes.
+                drained_any = True
 
                 if odom_T is not None:
                     # Level-1 odometry fusion: place the frame using the robot's
@@ -566,6 +643,11 @@ class NavmeshThread(threading.Thread):
                 prev_cy    = cy
 
                 got_new = True
+
+            # Stop-and-go: the in-flight frame has been dealt with, so lift the
+            # hold and let the controller drive until the next capture.
+            if drained_any:
+                motion_gate.release()
 
             now = time.time()
 

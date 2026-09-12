@@ -32,7 +32,7 @@ from tequila.depth   import load_model
 from tequila.viewer  import update_navmesh
 from tequila.threads import (
     CaptureThread, InferenceThread, NavmeshThread,
-    map_queue, navmesh_queue, stop_event, reset_map_event,
+    map_queue, navmesh_queue, stop_event, reset_map_event, motion_gate,
 )
 
 import config as rb3_cfg
@@ -325,6 +325,14 @@ class Controller:
                 
                 # print(self._path_pts)
                 v_lin, v_ang = self._pure_pursuit(rx, rz, ryaw, path)
+
+                # Stop-and-go interlock: the capture thread holds this gate
+                # from just before a frame is grabbed until the map has it, so
+                # every frame is taken standing still.  Manual drive bypasses
+                # it deliberately — a human on the sliders expects the robot to
+                # move when they move them.
+                if motion_gate.blocked:
+                    v_lin, v_ang = 0.0, 0.0
                 
 
             self.hw.send_cmd(
@@ -612,6 +620,8 @@ def run_robot(model, device, source, port, controller: Controller | None,
                 f"| v_right | `{s['v_r']:+.3f} m/s` |\n"
                 f"| cmd v_lin | `{s['v_lin']:+.3f} m/s` |\n"
                 f"| cmd v_ang | `{s['v_ang']:+.3f} rad/s` |\n"
+                f"| stop-and-go | "
+                f"`{'HELD (frame in flight)' if motion_gate.blocked else 'clear'}` |\n"
             )
 
             # Latest-frame info panel
@@ -678,6 +688,11 @@ def main():
     # Timing / capture
     cfg.MIN_FRAME_BRIGHTNESS = rb3_cfg.MIN_FRAME_BRIGHTNESS
     cfg.NAV_INTERVAL_S       = rb3_cfg.NAV_INTERVAL_S
+
+    # Stop-and-go: no motion while a frame is in flight (see MotionGate).
+    cfg.STOP_AND_GO           = rb3_cfg.STOP_AND_GO
+    cfg.STOP_AND_GO_SETTLE_S  = rb3_cfg.STOP_AND_GO_SETTLE_S
+    cfg.STOP_AND_GO_TIMEOUT_S = rb3_cfg.STOP_AND_GO_TIMEOUT_S
 
     # Fisheye undistortion for the RB3's wide-angle lens.
     cfg.FISHEYE              = rb3_cfg.FISHEYE

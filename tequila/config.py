@@ -33,6 +33,20 @@ MIN_FRAME_BRIGHTNESS = 0.0 # skip webcam frames below this mean brightness
                            # (camera warm-up / black frames); 0 = disabled
 PORT               = 8080  # viser web-viewer port
 
+# Stop-and-go capture — hold the robot still from just before a frame is
+# captured until the pipeline has finished with it.  The frame is then taken
+# from a stationary viewpoint (no motion blur, no rolling-shutter skew) and the
+# pose stamped on it cannot go stale while depth inference runs.  The robot
+# drives only in the CAPTURE_INTERVAL_S window between frames.
+# Off by default — it only means anything when a robot is driving; the RB3
+# deployment turns it on (see robot_deploy/rb3/config.py).
+STOP_AND_GO           = False
+STOP_AND_GO_SETTLE_S  = 0.25  # pause after braking before grabbing the frame,
+                              # so the chassis stops rocking
+STOP_AND_GO_TIMEOUT_S = 5.0   # failsafe: release the hold anyway if the frame
+                              # never reaches the map (dropped / inference
+                              # returned nothing), so the robot can't deadlock
+
 # Segmentation (unused in default pipeline, kept for reference)
 SAT_THRESH    = 22
 VAL_THRESH    = 45

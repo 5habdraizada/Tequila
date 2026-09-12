@@ -129,6 +129,14 @@ MIN_FRAME_BRIGHTNESS = 10.0  # skip near-black warm-up frames (mean < this)
 NAV_INTERVAL_S       = 2.5   # recompute the navmesh less often so its (blocking)
                              # pass doesn't stall the map display as often
 
+# Stop-and-go capture — the robot holds still from just before each frame is
+# grabbed until the map has it, then drives for CAPTURE_INTERVAL_S before the
+# next one.  Costs exploration speed; buys blur-free frames and a capture pose
+# that is still valid when the frame is placed.
+STOP_AND_GO           = True
+STOP_AND_GO_SETTLE_S  = 0.25   # brake-to-shutter pause (chassis rocking)
+STOP_AND_GO_TIMEOUT_S = 5.0    # failsafe release if the frame never lands
+
 # Viser viewer
 PORT = 8080                  # open http://<rb3-ip>:8080 on any browser on the LAN
 
