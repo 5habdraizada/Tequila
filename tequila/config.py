@@ -47,6 +47,13 @@ STOP_AND_GO_TIMEOUT_S = 5.0   # failsafe: release the hold anyway if the frame
                               # never reaches the map (dropped / inference
                               # returned nothing), so the robot can't deadlock
 
+# Extend the hold across planning as well: the robot stays still until the
+# navmesh worker has published a path computed on the cloud this frame went
+# into, so it never drives on a plan that predates what it just saw.  Costs
+# the navmesh compute time (~0.5-3 s) on every cycle — raise
+# STOP_AND_GO_TIMEOUT_S to cover inference + planning when enabling this.
+STOP_AND_GO_WAIT_NAVMESH = False
+
 # Segmentation (unused in default pipeline, kept for reference)
 SAT_THRESH    = 22
 VAL_THRESH    = 45

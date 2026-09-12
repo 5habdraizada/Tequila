@@ -690,9 +690,10 @@ def main():
     cfg.NAV_INTERVAL_S       = rb3_cfg.NAV_INTERVAL_S
 
     # Stop-and-go: no motion while a frame is in flight (see MotionGate).
-    cfg.STOP_AND_GO           = rb3_cfg.STOP_AND_GO
-    cfg.STOP_AND_GO_SETTLE_S  = rb3_cfg.STOP_AND_GO_SETTLE_S
-    cfg.STOP_AND_GO_TIMEOUT_S = rb3_cfg.STOP_AND_GO_TIMEOUT_S
+    cfg.STOP_AND_GO              = rb3_cfg.STOP_AND_GO
+    cfg.STOP_AND_GO_SETTLE_S     = rb3_cfg.STOP_AND_GO_SETTLE_S
+    cfg.STOP_AND_GO_TIMEOUT_S    = rb3_cfg.STOP_AND_GO_TIMEOUT_S
+    cfg.STOP_AND_GO_WAIT_NAVMESH = rb3_cfg.STOP_AND_GO_WAIT_NAVMESH
 
     # Fisheye undistortion for the RB3's wide-angle lens.
     cfg.FISHEYE              = rb3_cfg.FISHEYE

@@ -135,7 +135,14 @@ NAV_INTERVAL_S       = 2.5   # recompute the navmesh less often so its (blocking
 # that is still valid when the frame is placed.
 STOP_AND_GO           = True
 STOP_AND_GO_SETTLE_S  = 0.25   # brake-to-shutter pause (chassis rocking)
-STOP_AND_GO_TIMEOUT_S = 5.0    # failsafe release if the frame never lands
+STOP_AND_GO_TIMEOUT_S = 12.0   # failsafe release if the frame never lands.
+                               # Must cover depth inference *and* the navmesh
+                               # compute below, or the failsafe fires on every
+                               # slow cycle and the interlock does nothing.
+
+# Hold through planning too, so the robot only ever drives on a path planned
+# from the cloud including the frame it just stopped for.
+STOP_AND_GO_WAIT_NAVMESH = True
 
 # Viser viewer
 PORT = 8080                  # open http://<rb3-ip>:8080 on any browser on the LAN

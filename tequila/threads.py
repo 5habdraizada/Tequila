@@ -44,9 +44,12 @@ class MotionGate:
 
     CaptureThread holds the gate just before grabbing a frame; NavmeshThread
     releases it once that frame has been dealt with (integrated into the map,
-    or rejected by the alignment checks).  The motor controller polls
-    `blocked` and commands zero velocity while it is set, so the robot only
-    ever drives in the gap between frames.
+    or rejected by the alignment checks).  With cfg.STOP_AND_GO_WAIT_NAVMESH
+    the release moves one stage further down, to the navmesh worker publishing
+    a path planned on the cloud that frame went into — so the robot never
+    drives on a plan that predates what it just stopped to look at.  The motor
+    controller polls `blocked` and commands zero velocity while it is set, so
+    the robot only ever drives in the gap between frames.
 
     Why: depth inference takes ~0.2-2 s.  A frame captured while moving is
     motion-blurred, and the pose stamped on it at capture time describes a
@@ -346,6 +349,11 @@ class NavmeshThread(threading.Thread):
         self._nav_lock  = threading.Lock()
         self._nav_input = None      # (accum_pts, cam_pos, cam_fwd, trajectory)
         self._nav_reset = False     # signal the worker to drop its committed goal
+        self._plan_hold = False     # stop-and-go: a frame is standing still
+                                    # waiting for the worker to plan on it.  Set
+                                    # under _nav_lock together with _nav_input so
+                                    # the worker takes the hold and the cloud it
+                                    # belongs to in one atomic read.
 
     def run(self) -> None:
         last_map_run: float = 0.0  # last TSDF map extract+push (display cadence)
@@ -644,15 +652,19 @@ class NavmeshThread(threading.Thread):
 
                 got_new = True
 
-            # Stop-and-go: the in-flight frame has been dealt with, so lift the
-            # hold and let the controller drive until the next capture.
-            if drained_any:
-                motion_gate.release()
+            # Stop-and-go: whether the hold also spans the planner, or lifts as
+            # soon as the frame is in the map.
+            wait_plan = bool(getattr(cfg, "STOP_AND_GO_WAIT_NAVMESH", False))
 
             now = time.time()
 
             if use_tsdf:
                 if frames_integrated == 0:
+                    # Nothing fused yet, so there is no cloud to plan on — lift
+                    # any hold rather than stranding the robot on a first frame
+                    # the alignment rejected.
+                    if drained_any:
+                        motion_gate.release()
                     time.sleep(0.2)
                     continue
                 # Map refresh (fast): extract the fused surface and push it for
@@ -668,6 +680,7 @@ class NavmeshThread(threading.Thread):
             # Publish the latest cloud + camera pose for the navmesh worker.
             # This is a cheap reference hand-off — the worker does the heavy
             # SOR + compute_navmesh on its own thread.
+            published = False
             if got_new and accum_pts is not None:
                 traj = (np.array(trajectory, dtype=np.float32)
                         if len(trajectory) >= 2 else None)
@@ -678,6 +691,15 @@ class NavmeshThread(threading.Thread):
                         T_cum[:3, :3] @ np.array([0.0, 0.0, -1.0]),
                         traj,
                     )
+                    if drained_any and wait_plan:
+                        self._plan_hold = True
+                published = True
+
+            # Stop-and-go: this frame is done with the map.  Release now unless
+            # the hold also spans planning, in which case the worker owns it and
+            # releases once it has published a path computed on this cloud.
+            if drained_any and not (published and wait_plan):
+                motion_gate.release()
 
             time.sleep(0.1 if use_tsdf else 0.05)
 
@@ -699,16 +721,29 @@ class NavmeshThread(threading.Thread):
                     self._nav_reset = False
                     current_goal = None
                 inp = self._nav_input
+                # Take the stop-and-go hold together with the cloud it belongs
+                # to, so a computation already in flight when the hold was set
+                # can't release it — that would free the robot on a stale path.
+                serving_hold    = self._plan_hold
+                self._plan_hold = False
 
             if inp is None:
+                if serving_hold:
+                    motion_gate.release()   # nothing to plan on
                 time.sleep(0.2)
                 continue
-            if time.time() - last_run < cfg.NAV_INTERVAL_S:
+            # The rate limit exists to stop the worker re-planning the same
+            # cloud.  While a frame is standing still waiting on this plan it
+            # would only add dead time: stop-and-go already paces one plan per
+            # frame, so skip it when we hold.
+            if not serving_hold and time.time() - last_run < cfg.NAV_INTERVAL_S:
                 time.sleep(0.1)
                 continue
 
             accum_pts, cam_world_pos, cam_world_fwd, traj = inp
             if accum_pts is None or len(accum_pts) < cfg.MIN_FLOOR_POINTS * 2:
+                if serving_hold:
+                    motion_gate.release()   # too little cloud to plan on yet
                 time.sleep(0.2)
                 continue
 
@@ -761,5 +796,11 @@ class NavmeshThread(threading.Thread):
                 nav["frame_cam_yaw"] = float(np.degrees(
                     np.arctan2(-cam_world_fwd[0], -cam_world_fwd[2])))
                 _push(navmesh_queue, nav)
+
+            # Plan published — or compute_navmesh() found nothing, in which case
+            # waiting longer won't help.  Either way this frame's planning is
+            # finished, so let the robot drive.
+            if serving_hold:
+                motion_gate.release()
 
         print("[Navmesh] Worker stopped")
