@@ -574,7 +574,11 @@ def run_robot(model, device, source, port, controller: Controller | None,
             qy = float(np.sin(ryaw/2))
             server.scene.add_box(
                 "/robot/body",
-                dimensions=(0.20, 0.12, 0.25),
+                # (length, height, width): the body frame has forward = +X
+                # (x += v·cos(yaw), z -= v·sin(yaw)), so the long axis is X.
+                # Putting the length on Z instead draws the robot broadside —
+                # the marker then reads 90° off its actual heading.
+                dimensions=(0.25, 0.12, 0.20),
                 wxyz=(qw, 0.0, qy, 0.0),
                 position=(rx, 0.06, rz),
                 color=(50, 200, 50),
