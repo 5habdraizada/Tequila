@@ -18,6 +18,61 @@ from tequila.threads import (
 )
 
 
+#  Robot marker
+
+# A triangular wedge — apex on body +X, flat tail on -X — extruded along Y.
+# A box reads the same from every side, so the only cue to which end is the
+# front was the box being slightly longer than wide; the nose makes the
+# heading obvious from any camera angle, including straight down.
+#
+# Vertex order: 0-2 base ring (nose, tail -Z, tail +Z), 3-5 the same ring on
+# top. Faces wind counter-clockwise seen from outside, so normals point out.
+_MARKER_FACES = np.array([
+    (0, 2, 1), (3, 4, 5),          # base, top
+    (0, 1, 4), (0, 4, 3),          # -Z flank
+    (0, 3, 5), (0, 5, 2),          # +Z flank
+    (1, 2, 5), (1, 5, 4),          # tail
+], dtype=np.uint32)
+
+
+def _marker_vertices(length: float, width: float, height: float) -> np.ndarray:
+    hl, hw, hh = length / 2, width / 2, height / 2
+    return np.array([
+        ( hl, -hh,  0.0), (-hl, -hh, -hw), (-hl, -hh,  hw),
+        ( hl,  hh,  0.0), (-hl,  hh, -hw), (-hl,  hh,  hw),
+    ], dtype=np.float32)
+
+
+def add_robot_marker(server,
+                     name: str,
+                     x: float,
+                     z: float,
+                     yaw: float,
+                     length: float = 0.25,
+                     width: float = 0.20,
+                     height: float = 0.12,
+                     color: tuple = (50, 200, 50)) -> None:
+    """Draw the robot at (x, z) as a wedge whose nose points along `yaw`.
+
+    `yaw` is the body-frame heading shared by the odometry, the EKF and the
+    twin: 0 faces +X and positive yaw turns toward -Z (x += v·cos yaw,
+    z -= v·sin yaw). The quaternion rotates about +Y by yaw, which carries
+    the apex onto (cos yaw, 0, -sin yaw) — the direction the robot drives.
+
+    `height` is centred on the position like add_box, so the marker sits on
+    the floor plane.
+    """
+    server.scene.add_mesh_simple(
+        name,
+        vertices     = _marker_vertices(length, width, height),
+        faces        = _MARKER_FACES,
+        color        = color,
+        wxyz         = (float(np.cos(yaw / 2)), 0.0, float(np.sin(yaw / 2)), 0.0),
+        position     = (float(x), height / 2, float(z)),
+        flat_shading = True,
+    )
+
+
 def update_navmesh(server, nav: dict) -> None:
     """Push all navmesh layers to the viser scene (dict from compute_navmesh()).
 

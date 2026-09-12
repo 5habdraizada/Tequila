@@ -31,7 +31,7 @@ import viser
 import tequila.config as cfg
 from tequila.pointcloud import voxel_downsample_colored, voxel_downsample_pts
 from tequila.navmesh import compute_navmesh
-from tequila.viewer import update_navmesh
+from tequila.viewer import add_robot_marker, update_navmesh
 
 
 #  Scene library
@@ -751,9 +751,10 @@ class DigitalTwin:
             server.scene.add_frame(name, wxyz=yaw_to_wxyz(y),
                                    position=(x,0.15,z),
                                    axes_length=0.4, axes_radius=0.025)
-        server.scene.add_box("/robot/body",
-            dimensions=(0.3, 0.2, 0.4), wxyz=yaw_to_wxyz(ryaw),
-            position=(rx, 0.1, rz), color=(50, 200, 50))
+        # 0.4 m long, 0.3 m wide: the length belongs on the body's forward
+        # axis (+X), which a box sized (0.3, 0.2, 0.4) put on Z — broadside.
+        add_robot_marker(server, "/robot/body", rx, rz, ryaw,
+                         length=0.4, width=0.3, height=0.2)
         for trail, name, col in [
             (self.trail_true, "/trails/true", (0.1,0.9,0.1)),
             (self.trail_dr,   "/trails/odom", (0.9,0.1,0.1)),

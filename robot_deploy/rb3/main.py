@@ -29,7 +29,7 @@ if _ROOT not in sys.path:
 
 import tequila.config as cfg
 from tequila.depth   import load_model
-from tequila.viewer  import update_navmesh
+from tequila.viewer  import add_robot_marker, update_navmesh
 from tequila.threads import (
     CaptureThread, InferenceThread, NavmeshThread,
     map_queue, navmesh_queue, stop_event, reset_map_event, motion_gate,
@@ -570,18 +570,9 @@ def run_robot(model, device, source, port, controller: Controller | None,
         # Robot body in scene
         if controller:
             rx, rz, ryaw = controller.ekf.pose
-            qw = float(np.cos(ryaw/2))
-            qy = float(np.sin(ryaw/2))
-            server.scene.add_box(
-                "/robot/body",
-                # (length, height, width): the body frame has forward = +X
-                # (x += v·cos(yaw), z -= v·sin(yaw)), so the long axis is X.
-                # Putting the length on Z instead draws the robot broadside —
-                # the marker then reads 90° off its actual heading.
-                dimensions=(0.25, 0.12, 0.20),
-                wxyz=(qw, 0.0, qy, 0.0),
-                position=(rx, 0.06, rz),
-                color=(50, 200, 50),
+            add_robot_marker(
+                server, "/robot/body", rx, rz, ryaw,
+                length=0.25, width=0.20, height=0.12,
             )
 
         # Diagnostics panel — update at ~2 Hz to avoid spam
