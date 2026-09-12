@@ -106,14 +106,31 @@ class Raycaster:
         self.focal = focal
         self.cx, self.cy = cx, cy
 
-    def render(self, rx: float, rz: float, yaw: float):
-        cam_pos = np.array([rx, self.CAM_H, rz], dtype=np.float64)
-        cy_, sy_ = np.cos(yaw), np.sin(yaw)
+    def cam_rotation(self, body_yaw: float) -> np.ndarray:
+        """World rotation of the camera for a robot at `body_yaw`.
+
+        The ray grid looks along camera −Z, but the body frame drives along
+        +X (x += v·cos yaw, z -= v·sin yaw), so the camera yaw is the body
+        yaw minus 90° — the same conversion make_odom_source() applies on the
+        RB3.  Without it R_y(yaw)·(0,0,−1) = (−sin yaw, 0, −cos yaw), which is
+        the robot's *left*: the twin maps the wall beside it instead of the
+        one it is driving at.
+
+        render() and _backproject() must use the same rotation or the
+        reconstruction stops landing on the geometry it was rendered from,
+        so both go through here.
+        """
+        phi      = body_yaw - np.pi / 2.0
+        cy_, sy_ = np.cos(phi), np.sin(phi)
         Ry = np.array([[ cy_, 0, sy_], [0, 1, 0], [-sy_, 0, cy_]])
         t  = np.radians(-self.TILT)
         ct, st = np.cos(t), np.sin(t)
         Rx = np.array([[1, 0, 0], [0, ct, -st], [0, st, ct]])
-        R  = (Ry @ Rx).astype(np.float64)
+        return (Ry @ Rx).astype(np.float64)
+
+    def render(self, rx: float, rz: float, yaw: float):
+        cam_pos = np.array([rx, self.CAM_H, rz], dtype=np.float64)
+        R      = self.cam_rotation(yaw)
         rays_w = (R @ self._rays_cam.reshape(-1, 3).T).T
         N      = len(rays_w)
         t_min  = np.full(N, self.MAX_D, np.float64)
@@ -562,13 +579,9 @@ class DigitalTwin:
         pts    = pts[valid].astype(np.float32)
         colors = colors[valid]
 
-        # Full camera rotation (yaw + tilt) + camera world position
-        cy_, sy_ = np.cos(yaw), np.sin(yaw)
-        Ry = np.array([[ cy_, 0, sy_], [0, 1, 0], [-sy_, 0, cy_]], np.float32)
-        t  = np.radians(-self.rc.TILT)
-        ct, st = np.cos(t), np.sin(t)
-        Rx = np.array([[1, 0, 0], [0, ct, -st], [0, st, ct]], np.float32)
-        R  = (Ry @ Rx).astype(np.float32)
+        # Same body-yaw → camera rotation the render used, so points land back
+        # on the geometry they came from.
+        R         = self.rc.cam_rotation(yaw).astype(np.float32)
         cam_pos   = np.array([robot_x, self.rc.CAM_H, robot_z], np.float32)
         world_pts = (R @ pts.T).T + cam_pos
 
