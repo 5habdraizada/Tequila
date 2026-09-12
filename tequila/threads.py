@@ -369,7 +369,6 @@ class NavmeshThread(threading.Thread):
         prev_focal        = None
         prev_cx           = None
         prev_cy           = None
-        odom_T0           = None   # first odometry pose (world origin anchor)
         last_pose_T       = None   # last accumulated pose (odom duplicate skip)
         prev_odom_T       = None   # odom T_cum matching the frame in prev_img (VO)
 
@@ -405,7 +404,7 @@ class NavmeshThread(threading.Thread):
                 trajectory  = []
                 prev_cam = prev_img = prev_depth = None
                 prev_focal = prev_cx = prev_cy = None
-                odom_T0 = last_pose_T = prev_odom_T = None
+                last_pose_T = prev_odom_T = None
                 if tsdf is not None:
                     tsdf.reset()
                     frames_integrated = 0
@@ -432,10 +431,20 @@ class NavmeshThread(threading.Thread):
                 if odom_T is not None:
                     # Level-1 odometry fusion: place the frame using the robot's
                     # measured wheel-odometry pose instead of visual odometry.
-                    # Anchor to the first pose so the world origin is the start.
-                    if odom_T0 is None:
-                        odom_T0 = odom_T.copy()
-                    T_cum = np.linalg.inv(odom_T0) @ odom_T
+                    #
+                    # No re-anchoring here. odom_T is already a world pose in
+                    # nav coords, the frame the EKF, the robot marker and the
+                    # controller all speak. Anchoring to the first pose —
+                    # inv(odom_T0) @ odom_T — moved the map into camera frame 0
+                    # instead, which differs from nav by R_y(pi/2 - eyaw0): from
+                    # the usual yaw-0 start that rendered the whole cloud 90° to
+                    # the robot's left. It also fed the VO correction below
+                    # anchored coordinates that make_vo_update_cb then read as
+                    # nav, pushing the EKF sideways on every VO hit.
+                    #
+                    # The origin is the robot's starting position either way
+                    # (the EKF starts at zero), just without the 90° twist.
+                    T_cum = odom_T.copy()
 
                     # Duplicate-view skip: if the robot barely moved since the
                     # last accumulated frame, drop this one to avoid piling up
