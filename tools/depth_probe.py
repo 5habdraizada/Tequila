@@ -160,6 +160,117 @@ def colourise(depth: np.ndarray) -> np.ndarray:
     return out
 
 
+CSV_NAME = "depth_calib.csv"
+CSV_HEADER = "true_m,raw_m,x,y,patch,focal,infer_w\n"
+
+
+def record(out_dir: str, true_m: float, raw_m: float,
+           x: int, y: int, patch: int, focal: float, infer_w: int) -> str:
+    """Append one reading. Stores the RAW model output, not the corrected one,
+    so a fit stays valid when DEPTH_SCALE/OFFSET change underneath it."""
+    os.makedirs(out_dir, exist_ok=True)
+    path = os.path.join(out_dir, CSV_NAME)
+    new = not os.path.exists(path)
+    with open(path, "a", encoding="utf-8") as f:
+        if new:
+            f.write(CSV_HEADER)
+        f.write(f"{true_m:.4f},{raw_m:.4f},{x},{y},{patch},{focal:.3f},{infer_w}\n")
+    return path
+
+
+def load_readings(out_dir: str):
+    path = os.path.join(out_dir, CSV_NAME)
+    if not os.path.exists(path):
+        return None, path
+    rows = []
+    with open(path, encoding="utf-8") as f:
+        for i, line in enumerate(f):
+            if i == 0 or not line.strip():
+                continue
+            parts = line.strip().split(",")
+            rows.append((float(parts[0]), float(parts[1])))
+    return (np.array(rows) if rows else None), path
+
+
+def fit(out_dir: str) -> int:
+    """Fit the recorded readings and report the correction to apply.
+
+    Fits three models and compares residuals, rather than assuming one. A
+    scale-only correction is the usual guess, but if the bias is additive it
+    cannot represent it at any value, and forcing it trades a close-range
+    error for a far-range one.
+    """
+    data, path = load_readings(out_dir)
+    if data is None or len(data) < 2:
+        print(f"Need at least 2 readings; {path} has "
+              f"{0 if data is None else len(data)}.")
+        print("Collect them with:  --true-dist <measured> --record")
+        return 1
+
+    true, raw = data[:, 0], data[:, 1]
+    print(f"{len(true)} readings from {path}\n")
+    print(f"  {'true (m)':>9} {'raw (m)':>9} {'ratio':>7} {'offset':>8}")
+    for t, r in zip(true, raw):
+        print(f"  {t:9.3f} {r:9.3f} {r/t:7.3f} {r-t:+8.3f}")
+
+    span = float(true.max() - true.min())
+    k = float(np.sum(true * raw) / np.sum(raw * raw))       # true = k*raw
+    rms_k = float(np.sqrt(np.mean((true - k * raw) ** 2)))
+    c = float(np.mean(true - raw))                           # true = raw + c
+    rms_c = float(np.sqrt(np.mean((true - (raw + c)) ** 2)))
+    A = np.vstack([raw, np.ones_like(raw)]).T
+    (a, b), *_ = np.linalg.lstsq(A, true, rcond=None)
+    rms_ab = float(np.sqrt(np.mean((true - (a * raw + b)) ** 2)))
+
+    print(f"\n  {'model':<22} {'parameters':<34} RMS error")
+    print(f"  {'-'*22} {'-'*34} ---------")
+    print(f"  {'scale only':<22} {f'SCALE={k:.4f}, OFFSET=0':<34} {rms_k:.4f} m")
+    print(f"  {'offset only':<22} {f'SCALE=1.0, OFFSET={c:+.4f}':<34} {rms_c:.4f} m")
+    print(f"  {'affine':<22} {f'SCALE={a:.4f}, OFFSET={b:+.4f}':<34} {rms_ab:.4f} m")
+
+    # Affine fits at least as well as either special case by construction, so
+    # residuals alone always favour it. With few readings over a short span
+    # that is overfitting: the second parameter buys a better fit to the points
+    # you have and a worse extrapolation to the ones you care about. Let it win
+    # only once the data can actually distinguish the models.
+    enough = len(true) >= 4 and span >= 1.0
+    if rms_k <= rms_c * 1.3:
+        best = ("scale only", k, 0.0)
+    elif not enough:
+        best = ("offset only", 1.0, c)
+    elif rms_c <= rms_ab * 1.3:
+        best = ("offset only", 1.0, c)
+    else:
+        best = ("affine", a, b)
+
+    print(f"\n  best: {best[0]}", end="")
+    if not enough and rms_ab < rms_c:
+        print("   (affine fits closer, but the coverage below cannot justify it)")
+    else:
+        print()
+    print("\n  put in robot_deploy/rb3/config.py:")
+    print(f"      DEPTH_SCALE  = {best[1]:.4f}")
+    print(f"      DEPTH_OFFSET = {best[2]:+.4f}")
+
+    print()
+    if len(true) < 4:
+        print(f"  CAUTION: only {len(true)} readings. Two points fit any "
+              f"2-parameter model exactly,")
+        print("  which says nothing about whether the model is right.")
+    if span < 1.0:
+        print(f"  CAUTION: readings span only {span:.2f} m "
+              f"({true.min():.2f}-{true.max():.2f}).")
+        print("  Scale and offset corrections agree over a short span and diverge")
+        print(f"  badly outside it - at 3 m these two differ by "
+              f"{abs(k * 3 - (3 + c)):.2f} m.")
+        print(f"  Measure out to MAP_MAX_DEPTH_M "
+              f"({getattr(cfg, 'MAP_MAX_DEPTH_M', 3.0)} m) before trusting this.")
+    if enough:
+        print("  Coverage looks adequate. Apply it, then spot-check at a distance")
+        print("  you did NOT record and confirm it reads ~1.00x.")
+    return 0
+
+
 def serve(directory: str, port: int) -> None:
     import functools
     import http.server
@@ -203,7 +314,30 @@ def main() -> int:
                     help="serve --out over HTTP after probing")
     ap.add_argument("--no-rb3", action="store_true",
                     help="skip the RB3 config overrides (use tequila/config.py)")
+    ap.add_argument("--record", action="store_true",
+                    help="append this reading to the calibration CSV (needs --true-dist)")
+    ap.add_argument("--fit", action="store_true",
+                    help="fit the recorded readings and report the correction; probes nothing")
+    ap.add_argument("--clear", action="store_true",
+                    help="delete the recorded readings and exit")
     args = ap.parse_args()
+
+    if args.clear:
+        path = os.path.join(args.out, CSV_NAME)
+        if os.path.exists(path):
+            os.remove(path)
+            print(f"removed {path}")
+        else:
+            print(f"nothing to remove at {path}")
+        return 0
+
+    if args.fit:
+        if not args.no_rb3:
+            apply_rb3_overrides()
+        return fit(args.out)
+
+    if args.record and args.true_dist is None:
+        ap.error("--record needs --true-dist (the measured distance to record)")
 
     if not args.no_rb3:
         print(f"[cfg] RB3 overrides: {'applied' if apply_rb3_overrides() else 'NOT FOUND'}")
@@ -294,7 +428,12 @@ def main() -> int:
                 if abs(cfg.DEPTH_SCALE - 1.0) > 1e-9:
                     say(f"  (current DEPTH_SCALE={cfg.DEPTH_SCALE} is already applied "
                         f"above, so this folds in on top of it)")
-                say("  then re-run this to confirm it lands at 1.00x.")
+                say("  ...IF the error is multiplicative. One reading cannot tell:")
+                say("  a scale and an offset correction agree at the distance you")
+                say("  measured and diverge everywhere else. Record several across")
+                say("  the working range and let --fit choose the model:")
+                say("      --true-dist <measured> --record   (repeat at 2-3 distances)")
+                say("      --fit")
 
     if args.width is not None and args.edges is not None:
         say()
@@ -342,6 +481,17 @@ def main() -> int:
                     f"{2*np.degrees(np.arctan((w/2)/(focal*ratio))):.1f} deg, not "
                     f"{getattr(cfg,'UNDISTORT_FOV_DEG','?')} deg.")
                 say("  That points at the fisheye calibration, not the model.")
+
+    if args.record and np.isfinite(d_centre) and d_centre > 0:
+        # Undo whatever correction is currently configured, so the CSV holds
+        # the model's own output and stays valid if the config changes.
+        raw = (d_centre - cfg.DEPTH_OFFSET) / cfg.DEPTH_SCALE
+        p = record(args.out, args.true_dist, raw, sx, sy, args.patch,
+                   focal, cfg.INFER_WIDTH)
+        n_now = len(load_readings(args.out)[0])
+        say()
+        say(f"recorded: true={args.true_dist:.3f}  raw={raw:.3f} -> {p}")
+        say(f"  {n_now} reading(s) so far; run --fit when you have 3-4 across the range")
 
     # Cloud extent — the thing that looked too big in viser.
     nav_pts, map_pts, _ = frame_to_nav_pts(img, depth_m, focal)

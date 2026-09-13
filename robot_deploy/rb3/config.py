@@ -112,12 +112,20 @@ WP_REACHED_M = 0.20         # metres
 DEPTH_MODEL_ID = "depth-anything/Depth-Anything-V2-Metric-Indoor-Small-hf"
 INFER_WIDTH    = 640         # lower res for speed on embedded CPU
 
-# Metric correction for the model's depth — MEASURE it, don't guess:
-#     python3 tools/depth_probe.py --true-dist <tape-measured metres>
-# A metric depth model infers absolute distance partly from apparent size, so
-# undistorting to a 90 deg FOV (wider than its training data) makes objects
-# look smaller and the model read them as further away.  1.0 = uncorrected.
+# Metric correction for the model's depth:  corrected = SCALE * raw + OFFSET
+#
+# MEASURE these, don't guess — collect points across the working range, fit:
+#     python3 tools/depth_probe.py --true-dist 0.90 --record
+#     python3 tools/depth_probe.py --true-dist 2.00 --record
+#     python3 tools/depth_probe.py --fit
+#
+# Measured at 0.69 m and 0.90 m the model reads ~0.74 m TOO FAR, and a constant
+# offset fits that ~6x better than a constant scale — so the bias is additive
+# and DEPTH_SCALE alone cannot correct it.  Those two points are close together
+# though, and the scale/offset readings only diverge further out, so confirm
+# with readings out to MAP_MAX_DEPTH_M before trusting a fit.
 DEPTH_SCALE    = 1.0
+DEPTH_OFFSET   = 0.0
 MAP_MAX_DEPTH_M = 2.0        # display cloud: keep only nearby, reliable geometry
                              # (far points smear into fan arms)
 NAV_MAX_DEPTH_M = 4.0        # navmesh cloud: a bit further for look-ahead, but

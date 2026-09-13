@@ -9,20 +9,28 @@ INFER_WIDTH    = 1280    # inference image width (try 640 on CPU for speed)
 MAX_DEPTH_M    = 10.0    # clip anything beyond this distance (metres)
 FOV_H_DEG      = 70.0    # horizontal FOV in degrees; ignored when FISHEYE=True
 
-# Metric correction for the depth model's output, applied before clipping.
+# Metric correction for the depth model's output, applied before clipping:
+#     corrected = DEPTH_SCALE * raw + DEPTH_OFFSET
 #
 # The model predicts metres, but a metric depth model carries an implicit
-# camera: it infers absolute distance partly from how large things appear, so
-# feeding it a field of view unlike its training data shifts the whole scale.
-# Undistorting to UNDISTORT_FOV_DEG (wide) makes objects look smaller, so the
-# model reads them as further away and the cloud comes out too big.
+# camera and an implicit scene prior: it infers absolute distance partly from
+# how large things appear, so a field of view unlike its training data — or a
+# subject closer than anything it was trained on — biases the output.
 #
-# This has to be MEASURED, not derived — it depends on the lens, on
-# UNDISTORT_FOV_DEG and on how the HF processor resizes the input. Point the
-# camera at a wall a tape-measured distance away and run:
-#     python3 tools/depth_probe.py --true-dist 1.50
-# which prints the value to put here. 1.0 = trust the model as-is.
+# Both terms exist because the error is not always multiplicative. On the RB3
+# the measured error is almost purely ADDITIVE: reported ≈ true + 0.74 m over
+# 0.69-0.90 m, where a constant offset fits ~6x better than a constant scale.
+# A pure DEPTH_SCALE cannot represent that.
+#
+# MEASURE these, don't derive them — they depend on the lens, on
+# UNDISTORT_FOV_DEG and on how the HF processor resizes the input. Collect
+# readings across the working range and fit:
+#     python3 tools/depth_probe.py --true-dist 0.90 --record
+#     python3 tools/depth_probe.py --true-dist 2.00 --record   # ...and so on
+#     python3 tools/depth_probe.py --fit
+# Identity (1.0, 0.0) = trust the model as-is.
 DEPTH_SCALE    = 1.0
+DEPTH_OFFSET   = 0.0
 
 # Fisheye undistortion — rectify to rectilinear before depth inference so the
 # pinhole back-projection (r = f·tanθ) is valid. Modelled as an equidistant
