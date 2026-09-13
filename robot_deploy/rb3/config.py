@@ -119,12 +119,20 @@ INFER_WIDTH    = 640         # lower res for speed on embedded CPU
 #     python3 tools/depth_probe.py --true-dist 2.00 --record
 #     python3 tools/depth_probe.py --fit
 #
-# Measured at 0.69 m and 0.90 m the model reads ~0.74 m TOO FAR, and a constant
-# offset fits that ~6x better than a constant scale — so the bias is additive
-# and DEPTH_SCALE alone cannot correct it.  Those two points are close together
-# though, and the scale/offset readings only diverge further out, so confirm
-# with readings out to MAP_MAX_DEPTH_M before trusting a fit.
-DEPTH_SCALE    = 1.0
+# Fitted over 0.90-2.33 m (4 readings): the model reads ~1.74x TOO FAR, and the
+# bias is multiplicative — scale-only fits at 0.124 m RMS against 0.433 m for
+# offset-only, and affine buys nothing (0.123 m) so the second term stays at 0.
+#
+# An earlier fit over 0.69-0.90 m alone said the opposite, that the bias was a
+# constant +0.74 m. Over a 0.21 m span a scale and an offset are
+# indistinguishable; that conclusion was an artefact of the narrow range, not a
+# property of the model. Hence the coverage rule in --fit.
+#
+# Residuals are still +-9%, and the 2.24 m / 2.33 m readings disagree by 20%
+# despite being 9 cm apart, so this is a good correction rather than a precise
+# one. Re-measure the far end against a flat target that fills the sample patch
+# to tighten it.
+DEPTH_SCALE    = 0.5744
 DEPTH_OFFSET   = 0.0
 MAP_MAX_DEPTH_M = 2.0        # display cloud: keep only nearby, reliable geometry
                              # (far points smear into fan arms)

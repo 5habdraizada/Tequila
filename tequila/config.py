@@ -17,10 +17,11 @@ FOV_H_DEG      = 70.0    # horizontal FOV in degrees; ignored when FISHEYE=True
 # how large things appear, so a field of view unlike its training data — or a
 # subject closer than anything it was trained on — biases the output.
 #
-# Both terms exist because the error is not always multiplicative. On the RB3
-# the measured error is almost purely ADDITIVE: reported ≈ true + 0.74 m over
-# 0.69-0.90 m, where a constant offset fits ~6x better than a constant scale.
-# A pure DEPTH_SCALE cannot represent that.
+# Both terms exist because the error is not always multiplicative, and which
+# form fits can only be told from readings spread across the working range. On
+# the RB3 it turned out multiplicative (~1.74x too far over 0.90-2.33 m), but a
+# fit over a 0.21 m span first claimed a constant +0.74 m offset just as
+# convincingly — over a short span the two are indistinguishable.
 #
 # MEASURE these, don't derive them — they depend on the lens, on
 # UNDISTORT_FOV_DEG and on how the HF processor resizes the input. Collect
