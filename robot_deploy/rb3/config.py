@@ -111,6 +111,13 @@ WP_REACHED_M = 0.20         # metres
 # Use the small indoor metric model — fast enough on RB3 CPU
 DEPTH_MODEL_ID = "depth-anything/Depth-Anything-V2-Metric-Indoor-Small-hf"
 INFER_WIDTH    = 640         # lower res for speed on embedded CPU
+
+# Metric correction for the model's depth — MEASURE it, don't guess:
+#     python3 tools/depth_probe.py --true-dist <tape-measured metres>
+# A metric depth model infers absolute distance partly from apparent size, so
+# undistorting to a 90 deg FOV (wider than its training data) makes objects
+# look smaller and the model read them as further away.  1.0 = uncorrected.
+DEPTH_SCALE    = 1.0
 MAP_MAX_DEPTH_M = 2.0        # display cloud: keep only nearby, reliable geometry
                              # (far points smear into fan arms)
 NAV_MAX_DEPTH_M = 4.0        # navmesh cloud: a bit further for look-ahead, but

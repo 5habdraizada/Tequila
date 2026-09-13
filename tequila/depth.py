@@ -165,6 +165,10 @@ def run_inference(img: np.ndarray, model) -> tuple[np.ndarray, float, float, flo
         raw.unsqueeze(1), size=(h, w),
         mode="bicubic", align_corners=False,
     ).squeeze().cpu().numpy().astype(np.float32)
+    # Metric correction before the clip — clipping first would truncate at the
+    # wrong scale and silently flatten everything past MAX_DEPTH_M / SCALE.
+    if cfg.DEPTH_SCALE != 1.0:
+        depth_m *= cfg.DEPTH_SCALE
     depth_m = np.clip(depth_m, 0.1, cfg.MAX_DEPTH_M)
 
     edge_valid = depth_edge_mask(depth_m)

@@ -683,6 +683,7 @@ def main():
     args = parser.parse_args()
 
     cfg.DEPTH_MODEL_ID  = rb3_cfg.DEPTH_MODEL_ID
+    cfg.DEPTH_SCALE     = rb3_cfg.DEPTH_SCALE
     cfg.INFER_WIDTH     = args.width
     cfg.MAP_MAX_DEPTH_M = args.map_depth
     cfg.NAV_MAX_DEPTH_M = rb3_cfg.NAV_MAX_DEPTH_M

@@ -32,3 +32,6 @@ package-lock.json
 
 # HuggingFace cache
 .cache/
+
+# depth_probe.py output (measurement artefacts, not source)
+tools/probe_out/
