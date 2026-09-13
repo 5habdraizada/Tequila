@@ -31,7 +31,7 @@ import tequila.config as cfg
 from tequila.depth   import load_model
 from tequila.viewer  import add_robot_marker, update_navmesh
 from tequila.threads import (
-    CaptureThread, InferenceThread, NavmeshThread,
+    CaptureThread, InferenceThread, NavmeshThread, VOThread,
     map_queue, navmesh_queue, stop_event, reset_map_event, motion_gate,
 )
 
@@ -368,13 +368,23 @@ class Controller:
 def run_robot(model, device, source, port, controller: Controller | None,
               state: RobotState, odom_source=None, vo_update_cb=None):
 
+    # Anchor tracking: VOThread corrects the EKF between depth inferences, so
+    # NavmeshThread only has to hand it each placed frame as a new anchor.
+    vo_thread = None
+    if cfg.VO_TRACK_ENABLED and vo_update_cb is not None:
+        vo_thread = VOThread(vo_update_cb)
+
     nav_thread  = NavmeshThread(up_idx=1, vo_update_cb=vo_update_cb,
-                                pose_source=odom_source)
+                                pose_source=odom_source,
+                                anchor_sink=(vo_thread.set_anchor
+                                             if vo_thread else None))
     vo_cb_full  = vo_update_cb          # remember it so the toggle can restore it
     # Start with the config default: when VO correction is off the map stitches
     # from pure wheel+gyro odometry (no visual correction of the EKF).
     if not rb3_cfg.USE_VO_CORRECTION:
         nav_thread.vo_update_cb = None
+        if vo_thread is not None:
+            vo_thread.vo_update_cb = None
 
     threads = [
         CaptureThread(source, cfg.CAPTURE_INTERVAL_S, cfg.FRAME_SKIP,
@@ -382,6 +392,8 @@ def run_robot(model, device, source, port, controller: Controller | None,
         InferenceThread(model, device),
         nav_thread,
     ]
+    if vo_thread is not None:
+        threads.append(vo_thread)
     for t in threads:
         t.start()
 
@@ -493,6 +505,8 @@ def run_robot(model, device, source, port, controller: Controller | None,
         # On  → VO measures camera motion and corrects the EKF (odom + vision).
         # Off → map stitches from pure wheel+gyro odometry, no visual correction.
         nav_thread.vo_update_cb = vo_cb_full if g_vo_corr.value else None
+        if vo_thread is not None:
+            vo_thread.vo_update_cb = vo_cb_full if g_vo_corr.value else None
         print(f"[Main] VO drift correction: "
               f"{'ENABLED' if g_vo_corr.value else 'DISABLED (pure odometry)'}")
 
@@ -689,6 +703,10 @@ def main():
     cfg.STOP_AND_GO_SETTLE_S     = rb3_cfg.STOP_AND_GO_SETTLE_S
     cfg.STOP_AND_GO_TIMEOUT_S    = rb3_cfg.STOP_AND_GO_TIMEOUT_S
     cfg.STOP_AND_GO_WAIT_NAVMESH = rb3_cfg.STOP_AND_GO_WAIT_NAVMESH
+
+    # Anchor tracking: EKF correction between depth inferences (see VOThread).
+    cfg.VO_TRACK_ENABLED = rb3_cfg.VO_TRACK_ENABLED
+    cfg.VO_TRACK_HZ      = rb3_cfg.VO_TRACK_HZ
 
     # Fisheye undistortion for the RB3's wide-angle lens.
     cfg.FISHEYE              = rb3_cfg.FISHEYE

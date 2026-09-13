@@ -144,6 +144,14 @@ STOP_AND_GO_TIMEOUT_S = 12.0   # failsafe release if the frame never lands.
 # from the cloud including the frame it just stopped for.
 STOP_AND_GO_WAIT_NAVMESH = True
 
+# Anchor tracking: correct the EKF from camera frames taken BETWEEN depth
+# inferences, tracked against the last frame that has depth.  Frame-to-frame
+# VO can only compare two depth frames, ~3 s and up to 130° of yaw apart —
+# wider than UNDISTORT_FOV_DEG, so the two images share no scene and the
+# correction only ever fired while the robot was standing still.
+VO_TRACK_ENABLED = True
+VO_TRACK_HZ      = 5.0    # tracking attempts/s; raise once CPU headroom is known
+
 # Viser viewer
 PORT = 8080                  # open http://<rb3-ip>:8080 on any browser on the LAN
 

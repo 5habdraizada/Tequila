@@ -1,12 +1,15 @@
-"""The three worker threads and their shared communication queues.
+"""The worker threads and their shared communication queues.
 
   CaptureThread   — reads frames from webcam or video file.
   InferenceThread — runs depth inference + back-projection per frame.
   NavmeshThread   — accumulates the world map and recomputes the navmesh.
+  VOThread        — optional: tracks the live camera against the last depth
+                    frame and corrects the EKF between inferences.
 
 All queues have maxsize=1, so each consumer always sees the latest data and
 stale items are dropped automatically when a newer one arrives:
   frame_queue   — CaptureThread   -> InferenceThread  (raw BGR frames)
+  vo_queue      — CaptureThread   -> VOThread         (raw BGR frames, no pose)
   pts_queue     — InferenceThread -> NavmeshThread    (per-frame depth data)
   navmesh_queue — NavmeshThread   -> Viewer           (navmesh overlay dict)
   map_queue     — NavmeshThread   -> Viewer           (accumulated coloured cloud)
@@ -27,10 +30,11 @@ import tequila.config as cfg
 import tequila.tsdf as tsdf_mod
 from tequila.depth    import frame_to_result
 from tequila.navmesh  import compute_navmesh, recompute_path
-from tequila.odometry import icp_align, vo_align
+from tequila.odometry import icp_align, make_anchor, track_align, vo_align
 from tequila.pointcloud import voxel_downsample_colored, voxel_downsample_pts, sor_pts
 
 frame_queue   = queue.Queue(maxsize=1)   # raw BGR frames
+vo_queue      = queue.Queue(maxsize=1)   # raw BGR frames for the tracker
 pts_queue     = queue.Queue(maxsize=1)   # per-frame depth data (tuple)
 navmesh_queue = queue.Queue(maxsize=1)   # navmesh overlay dict
 map_queue     = queue.Queue(maxsize=1)   # accumulated coloured point cloud
@@ -201,12 +205,40 @@ class CaptureThread(threading.Thread):
             print(f"[Capture] {source}  ({total} frames @ {fps:.1f} fps, "
                   f"every {frame_skip}th frame)")
 
+    def _vo_idle(self, until: float) -> None:
+        """Feed vo_queue from the camera until `until`, then return.
+
+        This replaces the plain sleep that used to sit between depth captures.
+        The camera is producing frames the whole time either way — the appsink
+        just drops them — so tracking them costs a grab and a queue push, and
+        the frames are the ones taken while the robot is actually moving, which
+        is exactly what the EKF needs corrected.
+
+        Deliberately does not touch motion_gate or odom_source: this path must
+        not brake the robot or claim to know the pose of anything, so the
+        stop-and-go contract is entirely unchanged.
+        """
+        period = 1.0 / max(cfg.VO_TRACK_HZ, 0.1)
+        while not stop_event.is_set():
+            now = time.time()
+            if now >= until:
+                return
+            ret, frame = self.cap.read()
+            if ret and frame is not None:
+                _push(vo_queue, frame)
+            # Sleep the remainder of the tracking period, never past `until`.
+            time.sleep(max(0.0, min(period - (time.time() - now), until - time.time())))
+
     def run(self) -> None:
         frame_idx = 0
         gated     = bool(getattr(cfg, "STOP_AND_GO", False)) and not self.is_file
+        track     = bool(getattr(cfg, "VO_TRACK_ENABLED", False)) and not self.is_file
         if gated:
             print(f"[Capture] Stop-and-go enabled "
                   f"(settle {cfg.STOP_AND_GO_SETTLE_S:.2f}s)")
+        if track:
+            print(f"[Capture] Anchor tracking enabled "
+                  f"({cfg.VO_TRACK_HZ:.1f} Hz between depth frames)")
 
         while not stop_event.is_set():
             # Stop-and-go: brake first, let the chassis settle, and only then
@@ -260,10 +292,100 @@ class CaptureThread(threading.Thread):
                     # controller `interval` seconds of clear road before the
                     # next capture brakes it again.
                     motion_gate.wait_clear(cfg.STOP_AND_GO_TIMEOUT_S)
-                time.sleep(self.interval)
+                # The clear-road window: same duration as before, but spent
+                # feeding the tracker instead of sleeping through it.
+                if track:
+                    self._vo_idle(time.time() + self.interval)
+                else:
+                    time.sleep(self.interval)
 
         self.cap.release()
         print("[Capture] Stopped")
+
+
+class VOThread(threading.Thread):
+    """Track the live camera against the last depth frame to correct the EKF.
+
+    The frame-to-frame VO inside NavmeshThread can only compare two frames that
+    both went through depth inference, and at ~2 s per inference the robot has
+    often turned further than the camera's field of view in between — leaving
+    no shared scene to match, so the correction almost never fires while the
+    robot is actually moving.
+
+    This runs the other way round: NavmeshThread hands over each placed frame
+    as an *anchor* (image + depth + world pose), and every camera frame after
+    it is tracked against that anchor with optical flow. The pairs compared are
+    a fraction of a second apart, so they overlap almost completely. Successes
+    arrive in a burst after each anchor and tail off as the robot turns away
+    from it, which is the intended shape: corrections land while moving.
+
+    The measurement handed to vo_update_cb is the same kind NavmeshThread's
+    side-run produces — a camera world pose in nav coords — so it goes through
+    the same EKF gate and needs no special handling downstream.
+    """
+
+    def __init__(self, vo_update_cb) -> None:
+        super().__init__(daemon=True, name="VOThread")
+        self.vo_update_cb = vo_update_cb
+        self._anchor   = None
+        self._anchor_T = None
+        self._lock     = threading.Lock()
+        self._attempts = 0
+        self._hits     = 0
+
+    def set_anchor(self, img, depth_m, focal, cx, cy, T_world) -> None:
+        """Adopt a placed frame as the new tracking anchor (called by NavmeshThread)."""
+        anchor = make_anchor(img, depth_m, focal, cx, cy)
+        if anchor is None:
+            return        # too few corners with depth — keep tracking the old one
+        with self._lock:
+            self._anchor   = anchor
+            self._anchor_T = T_world.copy()
+
+    def reset(self) -> None:
+        with self._lock:
+            self._anchor = self._anchor_T = None
+
+    def run(self) -> None:
+        print("[VO] Anchor tracker started")
+        while not stop_event.is_set():
+            try:
+                frame = vo_queue.get(timeout=0.5)
+            except queue.Empty:
+                continue
+
+            cb = self.vo_update_cb      # may be cleared live by the GUI toggle
+            if cb is None:
+                continue
+
+            with self._lock:
+                anchor, T0 = self._anchor, self._anchor_T
+            if anchor is None or T0 is None:
+                continue   # nothing placed yet
+
+            R_rel, t_rel, n = track_align(anchor, frame)
+            self._attempts += 1
+
+            if R_rel is None:
+                if (cfg.VO_TRACK_LOG_EVERY
+                        and self._attempts % cfg.VO_TRACK_LOG_EVERY == 0):
+                    print(f"[VO/track] no fix — {n} usable tracks "
+                          f"(need {cfg.VO_MIN_INLIERS})  "
+                          f"hit rate {self._hits}/{self._attempts}")
+                continue
+
+            # Compose against the anchor's world pose exactly as NavmeshThread
+            # composes its side-run against prev_odom_T.
+            p_cam = T0[:3, :3] @ t_rel + T0[:3, 3]
+            R_cam = T0[:3, :3] @ R_rel
+            self._hits += 1
+            if (cfg.VO_TRACK_LOG_EVERY
+                    and self._hits % cfg.VO_TRACK_LOG_EVERY == 0):
+                print(f"[VO/track] fix: inliers={n}  "
+                      f"hit rate {self._hits}/{self._attempts}")
+            cb(p_cam, R_cam, n)
+
+        print("[VO] Anchor tracker stopped")
 
 
 class InferenceThread(threading.Thread):
@@ -334,12 +456,19 @@ class NavmeshThread(threading.Thread):
     NAV_INTERVAL_S, recomputes, and pushes the result to navmesh_queue.
     """
 
-    def __init__(self, up_idx: int, vo_update_cb=None, pose_source=None) -> None:
+    def __init__(self, up_idx: int, vo_update_cb=None, pose_source=None,
+                 anchor_sink=None) -> None:
         super().__init__(daemon=True, name="NavmeshThread")
         self.up_idx = up_idx
         # Optional callback(p_cam, R_cam, n_inliers) — called whenever VO
         # produces a reliable camera world pose so the EKF can be corrected.
         self.vo_update_cb = vo_update_cb
+        # Optional callback(img, depth, focal, cx, cy, T_world) — hands each
+        # placed frame to VOThread as its new tracking anchor.  When this is
+        # set the frame-to-frame side-run below stands down: both measure the
+        # same motion, and feeding two correlated observations into the EKF
+        # would shrink P faster than the evidence warrants.
+        self.anchor_sink = anchor_sink
         # Optional callable () -> 4×4 camera world pose (nav coords).  When set,
         # the navmesh worker queries this AFTER the slow compute pass to re-run
         # just the A* path from the robot's current position, correcting for
@@ -467,7 +596,10 @@ class NavmeshThread(threading.Thread):
 
                     # VO side-run for EKF correction — odom places the frame,
                     # VO measures the actual camera motion to correct EKF drift.
+                    # Stands down when VOThread is tracking: it corrects the
+                    # same motion from the same anchor, far more often.
                     if (self.vo_update_cb is not None
+                            and self.anchor_sink is None
                             and prev_img is not None
                             and prev_odom_T is not None):
                         R_vo, t_vo, n_vo = vo_align(
@@ -479,6 +611,12 @@ class NavmeshThread(threading.Thread):
                             p_cam_vo = prev_odom_T[:3, :3] @ t_vo + prev_odom_T[:3, 3]
                             R_cam_vo = prev_odom_T[:3, :3] @ R_vo
                             self.vo_update_cb(p_cam_vo, R_cam_vo, n_vo)
+                        else:
+                            # Silent failures here are why the low hit rate was
+                            # invisible: say which half gave up, and on what.
+                            print(f"[VO] no fix — {n_vo} "
+                                  f"{'inliers' if R_vo is None and n_vo else 'matches'} "
+                                  f"(need {cfg.VO_MIN_INLIERS})")
 
                 elif prev_cam is None:
                     # First frame: world coordinate system = camera frame 0.
@@ -567,6 +705,12 @@ class NavmeshThread(threading.Thread):
                     T_cum = planar_lock(T_cum)
 
                 last_pose_T = T_cum.copy()   # for odom duplicate-view skip
+
+                # Hand this frame to the tracker as its new anchor.  After the
+                # planar lock, so the pose the tracker composes against is the
+                # same one the frame's points were placed with.
+                if self.anchor_sink is not None:
+                    self.anchor_sink(new_img, new_depth, focal, cx, cy, T_cum)
 
                 # Diagnostic: the camera heading this frame is placed at, relative
                 # to frame 0.  Rotate the robot in place and watch this: if it

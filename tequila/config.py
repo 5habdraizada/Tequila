@@ -159,3 +159,28 @@ VO_REPROJ_ERR   = 4.0    # reprojection error threshold (pixels)
 VO_MAX_SHIFT_M  = 2.0    # max translation per frame (metres)
 VO_MAX_ROT_DEG  = 15.0   # max rotation per frame (degrees)
 VO_MIN_SHIFT_M  = 0.03   # min translation to accumulate; below this = duplicate view
+
+# Anchor tracking (KLT + PnP) — the high-rate EKF correction path.
+#
+# Depth inference takes ~1.5-2.5 s, so consecutive depth frames can be 60-130°
+# of yaw apart — wider than UNDISTORT_FOV_DEG, leaving no shared scene for
+# frame-to-frame VO to match. This tracks the live camera against the last
+# frame that HAS depth instead, so the pairs compared are a fraction of a
+# second (a few degrees) apart rather than a whole inference apart.
+#
+# Enabled per-deployment; the RB3 turns it on (see robot_deploy/rb3/config.py).
+VO_TRACK_ENABLED      = False
+VO_TRACK_HZ           = 5.0    # tracking attempts per second (cap; camera may be slower)
+VO_TRACK_MAX_FEATURES = 400    # corners per anchor — KLT cost scales with this
+VO_TRACK_QUALITY      = 0.01   # goodFeaturesToTrack quality level
+VO_TRACK_MIN_DIST     = 8      # min pixel spacing between corners
+VO_TRACK_FB_PX        = 1.5    # forward-backward error limit (px) for a kept track
+# Retire an anchor once this fraction of its original points is gone. As tracks
+# are lost the survivors cluster into one part of the image, and PnP on a small
+# clustered set returns a confident, wrong pose rather than failing — measured
+# on a synthetic turn, error stayed under 0.5° down to ~0.28 survival and blew
+# past 90° by 0.15. A wrong pose is worse than none, so stop early.
+VO_TRACK_MIN_FRAC     = 0.25
+VO_TRACK_WIN_PX       = 31     # KLT window; bigger survives more per-step motion
+VO_TRACK_PYR_LEVELS   = 4      # KLT pyramid levels; each one doubles the motion it can follow
+VO_TRACK_LOG_EVERY    = 10     # print one tracker outcome per N attempts (0 = silent)
