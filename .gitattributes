@@ -41,3 +41,20 @@ assets/examples/demo19.jpg filter=lfs diff=lfs merge=lfs -text
 assets/teaser.png filter=lfs diff=lfs merge=lfs -text
 metric_depth/assets/compare_zoedepth.png filter=lfs diff=lfs merge=lfs -text
 metric_depth/dataset/splits/hypersim/train.txt filter=lfs diff=lfs merge=lfs -text
+
+# Camera calibration: store as ordinary binary files, NOT through LFS.
+#
+# Everything above is the Hugging Face / Depth-Anything-V2 template, and its
+# *.npz rule catches the fisheye calibration. That file was committed as a
+# plain blob, so on any machine with git-lfs installed `git status` runs it
+# through the clean filter, gets a ~130-byte pointer that doesn't match, and
+# reports it modified forever. The trap: one `git add -A` there commits the
+# pointer, the robot pulls a pointer instead of a calibration, and depth
+# silently falls back to the uncalibrated lens model.
+#
+# A 4 KB file gains nothing from LFS. Later lines override earlier ones, so
+# these must stay below the *.npz rule. The second line matches by name at any
+# depth, because tools/camera_calibration.py saves into the current working
+# directory rather than tools/.
+tools/*.npz -filter -diff -merge -text
+*CameraCalibration*.npz -filter -diff -merge -text
